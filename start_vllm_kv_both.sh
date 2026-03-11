@@ -1,10 +1,28 @@
 TEST_NAME="${1:?Usage: $0 <test_name>}"
+BATCH_SIZE="${2:?Usage: $0 <batch_size>}"
+
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+SCRIPT_LOG="$LOG_DIR/startup_${TIMESTAMP}.log"
+PID_FILE="/tmp/vllm_kv_both.pid"
 TMP_CONFIG=$(mktemp /tmp/vllm_logging_XXXX.json)
-sed "s|vllm\.log|vllm_${TEST_NAME}.log|" "$SCRIPT_DIR/logging.config" > "$TMP_CONFIG"
+
 mkdir -p "$LOG_DIR"
+
+log() {
+    msg="$(date '+%Y-%m-%d %H:%M:%S') $*"
+    echo "$msg"
+    echo "$msg" >> "$SCRIPT_LOG"
+}
+
+log "Test name     : $TEST_NAME"
+log "Script log    : $SCRIPT_LOG"
+log "batch size    : $BATCH_SIZE"
+
+sed "s|vllm\.log|vllm_${TIMESTAMP}_${TEST_NAME}_${BATCH_SIZE}.log|" "$SCRIPT_DIR/logging.config" > "$TMP_CONFIG"
+log "Logging config: $TMP_CONFIG -> $LOG_DIR/vllm_${TEST_NAME}.log"
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:$LD_LIBRARY_PATH
 export MOONCAKE_CONFIG_PATH="/root/autodl-tmp/pxy/share/workspace/mooncake/mooncake.json"
@@ -29,6 +47,11 @@ export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
 export ASCEND_RT_VISIBLE_DEVICES=2,3
 
 MODEL_NAME=Qwen3-8B
+
+source /root/autodl-tmp/py_venv/vllm2/bin/activate
+
+log "Starting vllm serve (model: $MODEL_NAME) ..."
+
 VLLM_LOGGING_CONFIG_PATH="$TMP_CONFIG" \
 vllm serve $MODEL_PATH/$MODEL_NAME \
     --dtype bfloat16 \
@@ -49,4 +72,7 @@ vllm serve $MODEL_PATH/$MODEL_NAME \
           "load_async": true,
           "register_buffer": true
       }
-  }'
+  }' &
+
+echo $! > "$PID_FILE"
+log "vllm started (PID $(cat $PID_FILE))"
