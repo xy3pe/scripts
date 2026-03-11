@@ -3,12 +3,12 @@ set -euo pipefail
 
 TEST_NAME="${1:?Usage: $0 <test_name>}"
 
-BATCH_SIZES=(2 5 10 15 20 25 30)
+BATCH_SIZES=(35 30 25 20 10 5)
 VLLM_PORT=8131
 VLLM_READY_TIMEOUT=300   # 最多等待 5 分钟
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VLLM_SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../../scripts" && pwd)"
+VLLM_SCRIPTS_DIR="/root/autodl-tmp/pxy/share/workspace/scripts"
 LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
 SWEEP_LOG="$LOG_DIR/sweep_${TEST_NAME}.log"
 
@@ -53,7 +53,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
 
     # 1. 启动 vllm
     log "Starting vllm (TEST_NAME=${TEST_NAME}_bs${BATCH_SIZE})..."
-    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TEST_NAME}_bs${BATCH_SIZE}" "$BATCH_SIZE"
+    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TEST_NAME}" "$BATCH_SIZE"
 
     # 2. 等待 vllm 就绪，失败则停止并跳过本轮
     if ! wait_for_vllm; then
