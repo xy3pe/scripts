@@ -1,3 +1,11 @@
+TEST_NAME="${1:?Usage: $0 <test_name>}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
+TMP_CONFIG=$(mktemp /tmp/vllm_logging_XXXX.json)
+sed "s|vllm\.log|vllm_${TEST_NAME}.log|" "$SCRIPT_DIR/logging.config" > "$TMP_CONFIG"
+mkdir -p "$LOG_DIR"
+
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:$LD_LIBRARY_PATH
 export MOONCAKE_CONFIG_PATH="/root/autodl-tmp/pxy/share/workspace/mooncake/mooncake.json"
 export MODEL_PATH="/root/autodl-tmp/models"
@@ -23,6 +31,7 @@ export ASCEND_RT_VISIBLE_DEVICES=2,3
 MODEL_NAME=Qwen3-8B
 
 vllm serve $MODEL_PATH/$MODEL_NAME \
+    --logging-config "$TMP_CONFIG" \
     --dtype bfloat16 \
     --max-model-len 16k \
     --tensor-parallel-size 2 \
