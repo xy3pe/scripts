@@ -1,6 +1,6 @@
 TEST_NAME="${1:?Usage: $0 <test_name>}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
 TMP_CONFIG=$(mktemp /tmp/vllm_logging_XXXX.json)
 sed "s|vllm\.log|vllm_${TEST_NAME}.log|" "$SCRIPT_DIR/logging.config" > "$TMP_CONFIG"
@@ -29,9 +29,8 @@ export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
 export ASCEND_RT_VISIBLE_DEVICES=2,3
 
 MODEL_NAME=Qwen3-8B
-
+VLLM_LOGGING_CONFIG_PATH="$TMP_CONFIG" \
 vllm serve $MODEL_PATH/$MODEL_NAME \
-    --logging-config "$TMP_CONFIG" \
     --dtype bfloat16 \
     --max-model-len 16k \
     --tensor-parallel-size 2 \
