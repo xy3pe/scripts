@@ -9,7 +9,7 @@ VLLM_READY_TIMEOUT=300   # 最多等待 5 分钟
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VLLM_SCRIPTS_DIR="/root/autodl-tmp/pxy/share/workspace/scripts"
-LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
+LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs/${TASK_NAME}"
 SWEEP_LOG="$LOG_DIR/sweep_${TASK_NAME}.log"
 
 mkdir -p "$LOG_DIR"
@@ -53,7 +53,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
 
     # 1. 启动 vllm
     log "Starting vllm (TASK_NAME=${TASK_NAME}_bs${BATCH_SIZE})..."
-    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TASK_NAME}_bs${BATCH_SIZE}" "$BATCH_SIZE"
+    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TASK_NAME}" "$BATCH_SIZE"
 
     # 2. 等待 vllm 就绪，失败则停止并跳过本轮
     if ! wait_for_vllm; then
