@@ -53,7 +53,7 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
 
     # 1. 启动 vllm
     log "Starting vllm (TEST_NAME=${TEST_NAME}_bs${BATCH_SIZE})..."
-    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TEST_NAME}" "$BATCH_SIZE"
+    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TEST_NAME}_bs${BATCH_SIZE}" "$BATCH_SIZE"
 
     # 2. 等待 vllm 就绪，失败则停止并跳过本轮
     if ! wait_for_vllm; then
