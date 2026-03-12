@@ -3,11 +3,14 @@ AISBench Log Analyzer
 用途：解析 aisbench 前缀的日志文件，提取统计数据，生成 Excel 报表和折线图。
 
 用法：
-    python aisbench_analyze.py [--log-dir LOGS_DIR] [--output OUTPUT.xlsx]
+    python aisbench_analyze.py --task-name TASK_NAME [--log-dir LOGS_DIR] [--output OUTPUT.xlsx]
+
+日志文件命名规则：aisbench_{TASK_NAME}_bs{BATCH_SIZE}.log
+输出文件命名规则：aisbench_{TASK_NAME}.xlsx
 
 默认：
-    --log-dir  ../logs  (相对于脚本所在目录)
-    --output   aisbench_analysis.xlsx  (输出到脚本所在目录)
+    --log-dir  ../logs/{TASK_NAME}  (相对于脚本所在目录)
+    --output   ../analysis/{TASK_NAME}/aisbench_{TASK_NAME}.xlsx
 """
 
 import re
@@ -120,24 +123,24 @@ def extract_stats(filepath):
     return data
 
 
-def load_all_logs(log_dir):
-    """扫描目录，加载所有 aisbench_*_sharegpt_N.log 文件，按并发数排序返回列表。"""
-    pattern = os.path.join(log_dir, 'aisbench_*.log')
+def load_all_logs(log_dir, task_name):
+    """扫描目录，加载所有 aisbench_{TASK_NAME}_bs{BATCH_SIZE}.log 文件，按 batch_size 排序返回列表。"""
+    pattern = os.path.join(log_dir, f'aisbench_{task_name}_bs*.log')
     files = sorted(glob.glob(pattern))
     all_data = []
     for filepath in files:
         filename = os.path.basename(filepath)
-        m = re.search(r'sharegpt_(\d+)\.log', filename)
-        concurrency = int(m.group(1)) if m else 0
+        m = re.search(r'_bs(\d+)\.log', filename)
+        batch_size = int(m.group(1)) if m else 0
         stats = extract_stats(filepath)
         if stats:
             stats['file'] = filename
-            stats['concurrency_setting'] = concurrency
+            stats['batch_size'] = batch_size
             all_data.append(stats)
             print(f'  [OK] {filename}: {len(stats)} fields')
         else:
             print(f'  [FAIL] {filename}: no stats found')
-    all_data.sort(key=lambda x: x['concurrency_setting'])
+    all_data.sort(key=lambda x: x['batch_size'])
     return all_data
 
 
@@ -158,13 +161,13 @@ thin    = Side(border_style='thin', color='BFBFBF')
 BORDER  = Border(left=thin, right=thin, top=thin, bottom=thin)
 
 
-def build_raw_data_sheet(ws, all_data):
+def build_raw_data_sheet(ws, all_data, task_name):
     n_conc   = len(all_data)
     DATA_COL = 3  # 数据从 C 列开始
 
     # 标题行
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2 + n_conc)
-    tc = ws.cell(row=1, column=1, value='AISBench Stream Chat (ShareGPT) - Benchmark Statistics')
+    tc = ws.cell(row=1, column=1, value=f'AISBench {task_name} - Benchmark Statistics')
     tc.font = Font(name=FONT_NAME, bold=True, size=14, color='1F4E79')
     tc.alignment = CENTER
     tc.fill = PatternFill('solid', start_color='EBF3FB')
@@ -175,7 +178,7 @@ def build_raw_data_sheet(ws, all_data):
         c.font = HDR_FONT; c.fill = HDR_FILL; c.alignment = CENTER; c.border = BORDER
 
     for ci, d in enumerate(all_data):
-        c = ws.cell(row=2, column=DATA_COL + ci, value=f"Concurrency={d['concurrency_setting']}")
+        c = ws.cell(row=2, column=DATA_COL + ci, value=f"BS={d['batch_size']}")
         c.font = HDR_FONT; c.fill = HDR_FILL; c.alignment = CENTER; c.border = BORDER
 
     # 延迟指标分组
@@ -210,7 +213,7 @@ def build_raw_data_sheet(ws, all_data):
         ('Failed Requests',                   'failed_requests'),
         ('Success Requests',                  'success_requests'),
         ('Actual Concurrency',                'concurrency'),
-        ('Max Concurrency Setting',           'max_concurrency'),
+        ('Batch Size (Max Concurrency)',       'max_concurrency'),
         ('Request Throughput (req/s)',         'request_throughput_rps'),
         ('Total Input Tokens',                'total_input_tokens'),
         ('Prefill Token Throughput (token/s)','prefill_token_throughput_tps'),
@@ -269,11 +272,11 @@ def build_raw_data_sheet(ws, all_data):
     ws.row_dimensions[2].height = 22
 
 
-def build_charts_sheet(cws, all_data):
+def build_charts_sheet(cws, all_data, task_name):
     cws.sheet_view.showGridLines = False
 
     chart_cols = [
-        ('Max Concurrency',                      'max_concurrency'),
+        ('Batch Size',                           'max_concurrency'),
         ('E2EL Avg (ms)',                         'E2EL_avg'),
         ('TTFT Avg (ms)',                         'TTFT_avg'),
         ('TPOT Avg (ms)',                         'TPOT_avg'),
@@ -287,7 +290,7 @@ def build_charts_sheet(cws, all_data):
 
     # 页面标题
     cws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(chart_cols))
-    pt = cws.cell(row=1, column=1, value='AISBench Performance Charts - Stream Chat (ShareGPT)')
+    pt = cws.cell(row=1, column=1, value=f'AISBench Performance Charts - {task_name}')
     pt.font = Font(name=FONT_NAME, bold=True, size=15, color='1F4E79')
     pt.alignment = CENTER
 
@@ -312,7 +315,7 @@ def build_charts_sheet(cws, all_data):
         chart.title = title
         chart.style = 10
         chart.y_axis.title = y_title
-        chart.x_axis.title = 'Max Concurrency'
+        chart.x_axis.title = 'Batch Size'
         chart.legend.position = 'b'
         chart.y_axis.numFmt = '#,##0.00'
         cats = Reference(cws, min_col=1, min_row=CD_ROW + 1, max_row=CD_END_ROW)
@@ -349,15 +352,15 @@ def build_charts_sheet(cws, all_data):
     cws.add_chart(chart3, 'A39')
 
 
-def generate_excel(all_data, output_path):
+def generate_excel(all_data, output_path, task_name):
     wb = openpyxl.Workbook()
 
     ws = wb.active
     ws.title = 'Raw Data'
-    build_raw_data_sheet(ws, all_data)
+    build_raw_data_sheet(ws, all_data, task_name)
 
     cws = wb.create_sheet('Charts')
-    build_charts_sheet(cws, all_data)
+    build_charts_sheet(cws, all_data, task_name)
 
     wb.save(output_path)
     print(f'Saved: {output_path}')
@@ -369,26 +372,32 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     parser = argparse.ArgumentParser(description='Analyze AISBench log files and export to Excel.')
-    parser.add_argument('--log-dir', default=os.path.join(script_dir, '..', 'logs'),
-                        help='Directory containing aisbench_*.log files (default: ../logs)')
-    parser.add_argument('--output', default=os.path.join(script_dir, 'aisbench_analysis.xlsx'),
-                        help='Output Excel file path (default: aisbench_analysis.xlsx)')
+    parser.add_argument('--task-name', required=True,
+                        help='Task name used in log file naming: aisbench_{TASK_NAME}_bs{BATCH_SIZE}.log')
+    parser.add_argument('--log-dir', default=None,
+                        help='Directory containing aisbench log files (default: ../logs/{TASK_NAME})')
+    parser.add_argument('--output', default=None,
+                        help='Output Excel file path (default: ../analysis/{TASK_NAME}/aisbench_{TASK_NAME}.xlsx)')
     args = parser.parse_args()
 
-    log_dir = os.path.abspath(args.log_dir)
-    output  = os.path.abspath(args.output)
+    task_name = args.task_name
+    log_dir   = os.path.abspath(args.log_dir or os.path.join(script_dir, '..', 'logs', task_name))
+    output    = os.path.abspath(args.output  or os.path.join(script_dir, '..', 'analysis', task_name, f'aisbench_{task_name}.xlsx'))
 
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+
+    print(f'Task name     : {task_name}')
     print(f'Log directory : {log_dir}')
     print(f'Output file   : {output}')
     print()
 
-    all_data = load_all_logs(log_dir)
+    all_data = load_all_logs(log_dir, task_name)
     if not all_data:
-        print('No data found. Check the log directory.')
+        print('No data found. Check the log directory and task name.')
         return
 
     print(f'\nLoaded {len(all_data)} log files. Generating Excel...')
-    generate_excel(all_data, output)
+    generate_excel(all_data, output, task_name)
 
 
 if __name__ == '__main__':

@@ -1,20 +1,33 @@
 import re
 import os
+import argparse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.chart import LineChart, Reference
 from openpyxl.utils import get_column_letter
 
-TEST_NAME="0311_vllm_api_stream_chat_multiturn"
+parser = argparse.ArgumentParser(description='Generate prefix cache hit rate Excel report.')
+parser.add_argument('--task-name', default="0311_vllm_api_stream_chat_multiturn",
+                    help='Task name used in log file naming: vllm_{TASK_NAME}_bs{BATCH_SIZE}.log')
+parser.add_argument('--log-dir', default=None,
+                    help='Directory containing vllm log files (default: ../logs/{TASK_NAME})')
+parser.add_argument('--output-dir', default=None,
+                    help='Output directory (default: ../analysis/{TASK_NAME})')
+args = parser.parse_args()
 
-LOG_DIR = "/Users/pxy/WorkSpace/logs/" + TEST_NAME
-OUTPUT_DIR = "/Users/pxy/WorkSpace/analysis/" + TEST_NAME
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "prefix_cache_hit_rate.xlsx")
+TASK_NAME  = args.task_name
+script_dir = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR    = args.log_dir    or os.path.join(script_dir, '..', 'logs',     TASK_NAME)
+OUTPUT_DIR = args.output_dir or os.path.join(script_dir, '..', 'analysis', TASK_NAME)
+LOG_DIR    = os.path.abspath(LOG_DIR)
+OUTPUT_DIR = os.path.abspath(OUTPUT_DIR)
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, f"prefix_cache_{TASK_NAME}.xlsx")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── Parse log files ──────────────────────────────────────────────────────────
-log_files = sorted(f for f in os.listdir(LOG_DIR) if f.startswith("vllm_") and f.endswith(".log"))
+log_files = sorted(f for f in os.listdir(LOG_DIR)
+                   if f.startswith(f"vllm_{TASK_NAME}_bs") and f.endswith(".log"))
 
 data = {}  # {batch_size: [(timestamp, hit_rate), ...]}
 

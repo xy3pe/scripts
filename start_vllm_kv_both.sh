@@ -1,13 +1,14 @@
-TEST_NAME="${1:?Usage: $0 <test_name>}"
+TASK_NAME="${1:?Usage: $0 <TASK_NAME>}"
 BATCH_SIZE="${2:?Usage: $0 <batch_size>}"
 
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
+LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs/${TASK_NAME}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SCRIPT_LOG="$LOG_DIR/startup_${TIMESTAMP}.log"
 PID_FILE="/tmp/vllm_kv_both.pid"
 TMP_CONFIG=$(mktemp /tmp/vllm_logging_XXXX.json)
+VLLM_LOG_FILE_NAME="vllm_${TASK_NAME}_bs${BATCH_SIZE}.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -17,12 +18,12 @@ log() {
     echo "$msg" >> "$SCRIPT_LOG"
 }
 
-log "Test name     : $TEST_NAME"
+log "Test name     : $TASK_NAME"
 log "Script log    : $SCRIPT_LOG"
 log "batch size    : $BATCH_SIZE"
 
-sed "s|vllm\.log|vllm_${TIMESTAMP}_${TEST_NAME}_${BATCH_SIZE}.log|" "$SCRIPT_DIR/logging.config" > "$TMP_CONFIG"
-log "Logging config: $TMP_CONFIG -> $LOG_DIR/vllm_${TEST_NAME}.log"
+sed "s|\"filename\": \"[^\"]*\"|\"filename\": \"${LOG_DIR}/${VLLM_LOG_FILE_NAME}\"|" "$SCRIPT_DIR/logging.config" > "$TMP_CONFIG"
+log "Logging config: $TMP_CONFIG -> $LOG_DIR/${VLLM_LOG_FILE_NAME}"
 
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:$LD_LIBRARY_PATH
 export MOONCAKE_CONFIG_PATH="/root/autodl-tmp/pxy/share/workspace/mooncake/mooncake.json"

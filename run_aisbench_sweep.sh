@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-TEST_NAME="${1:?Usage: $0 <test_name>}"
+TASK_NAME="${1:?Usage: $0 <TASK_NAME>}"
 
 BATCH_SIZES=(35 30 25 20 10 5)
 VLLM_PORT=8131
@@ -10,7 +10,7 @@ VLLM_READY_TIMEOUT=300   # 最多等待 5 分钟
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VLLM_SCRIPTS_DIR="/root/autodl-tmp/pxy/share/workspace/scripts"
 LOG_DIR="/root/autodl-tmp/pxy/share/workspace/logs"
-SWEEP_LOG="$LOG_DIR/sweep_${TEST_NAME}.log"
+SWEEP_LOG="$LOG_DIR/sweep_${TASK_NAME}.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -46,14 +46,14 @@ stop_vllm() {
 trap 'log "Interrupted, cleaning up..."; stop_vllm; exit 1' INT TERM
 
 # ── 主循环 ──────────────────────────────────────────────────────────────────
-log "Sweep start: TEST_NAME=$TEST_NAME  BATCH_SIZES=${BATCH_SIZES[*]}"
+log "Sweep start: TASK_NAME=$TASK_NAME  BATCH_SIZES=${BATCH_SIZES[*]}"
 
 for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
     log "========== Round: BATCH_SIZE=$BATCH_SIZE =========="
 
     # 1. 启动 vllm
-    log "Starting vllm (TEST_NAME=${TEST_NAME}_bs${BATCH_SIZE})..."
-    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TEST_NAME}_bs${BATCH_SIZE}" "$BATCH_SIZE"
+    log "Starting vllm (TASK_NAME=${TASK_NAME}_bs${BATCH_SIZE})..."
+    bash "$VLLM_SCRIPTS_DIR/start_vllm_kv_both.sh" "${TASK_NAME}_bs${BATCH_SIZE}" "$BATCH_SIZE"
 
     # 2. 等待 vllm 就绪，失败则停止并跳过本轮
     if ! wait_for_vllm; then
@@ -63,8 +63,8 @@ for BATCH_SIZE in "${BATCH_SIZES[@]}"; do
     fi
 
     # 3. 运行压测
-    log "Running sharegpt benchmark (BATCH_SIZE=$BATCH_SIZE)..."
-    if bash "$SCRIPT_DIR/sharegpt.sh" "$TEST_NAME" "$BATCH_SIZE"; then
+    log "Running aisbench benchmark (BATCH_SIZE=$BATCH_SIZE)..."
+    if bash "$SCRIPT_DIR/aisbench.sh" "$TASK_NAME" "$BATCH_SIZE"; then
         log "Benchmark finished: BATCH_SIZE=$BATCH_SIZE"
     else
         log "WARNING: benchmark exited with error for BATCH_SIZE=$BATCH_SIZE, continuing..."
