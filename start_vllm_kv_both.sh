@@ -47,7 +47,7 @@ export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
 
 export ASCEND_RT_VISIBLE_DEVICES=2,3
 
-MODEL_NAME=Qwen3-8B
+MODEL_NAME=Qwen3-32B
 
 source /root/autodl-tmp/py_venv/vllm2/bin/activate
 
@@ -63,7 +63,7 @@ vllm serve $MODEL_PATH/$MODEL_NAME \
     --max-num-batched-tokens 8192 \
     --gpu-memory-utilization 0.9 \
     --enable-request-id-headers \
-    --served-model-name Qwen3-8B \
+    --served-model-name Qwen3-32B \
     --kv-transfer-config '{
       "kv_connector": "MooncakeConnectorStoreV1",
       "kv_role": "kv_both",
