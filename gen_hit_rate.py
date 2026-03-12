@@ -29,7 +29,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 log_files = sorted(f for f in os.listdir(LOG_DIR)
                    if f.startswith(f"vllm_{TASK_NAME}_bs") and f.endswith(".log"))
 
-data = {}  # {batch_size: [(timestamp, hit_rate), ...]}
+# data: {batch_size: [(timestamp, hit_rate, gen_throughput, kv_cache_usage), ...]}
+data = {}
 
 for fname in log_files:
     m = re.search(r"_bs(\d+)", fname)
@@ -41,11 +42,17 @@ for fname in log_files:
         for line in f:
             if "Prefix cache hit rate:" not in line:
                 continue
-            ts_m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
-            # match "Prefix cache hit rate: X%" but not "External Prefix..."
-            rate_m = re.search(r"(?<!External )Prefix cache hit rate: ([0-9.]+)%", line)
+            ts_m    = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
+            rate_m  = re.search(r"(?<!External )Prefix cache hit rate: ([0-9.]+)%", line)
+            gen_m   = re.search(r"Avg generation throughput: ([0-9.]+) tokens/s", line)
+            kv_m    = re.search(r"GPU KV cache usage: ([0-9.]+)%", line)
             if ts_m and rate_m:
-                entries.append((ts_m.group(1), float(rate_m.group(1))))
+                entries.append((
+                    ts_m.group(1),
+                    float(rate_m.group(1)),
+                    float(gen_m.group(1))  if gen_m  else None,
+                    float(kv_m.group(1))   if kv_m   else None,
+                ))
     data[batch_size] = entries
 
 batch_sizes = sorted(data.keys())
@@ -53,6 +60,7 @@ batch_sizes = sorted(data.keys())
 # ── Styles ───────────────────────────────────────────────────────────────────
 HDR_DARK  = PatternFill("solid", start_color="1F4E79")
 HDR_MID   = PatternFill("solid", start_color="2E75B6")
+HDR_LIGHT = PatternFill("solid", start_color="4472C4")
 WHITE_FT  = Font(name="Arial", bold=True, color="FFFFFF", size=10)
 BODY_FT   = Font(name="Arial", size=9)
 BOLD_FT   = Font(name="Arial", bold=True, size=10)
@@ -67,76 +75,117 @@ def hdr(ws, row, col, value, fill, width=None):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 # ── Sheet 1: Raw Data ─────────────────────────────────────────────────────────
+# Layout: for each BS → Timestamp | Hit Rate (%) | Gen Throughput (tok/s) | KV Cache (%)
 wb = Workbook()
 ws_raw = wb.active
 ws_raw.title = "Raw Data"
 ws_raw.row_dimensions[1].height = 20
 
 col = 1
-batch_col_map = {}
+batch_col_map = {}  # {bs: (ts_col, rate_col, gen_col, kv_col)}
 for bs in batch_sizes:
-    hdr(ws_raw, 1, col,   f"BS={bs}  Timestamp",    HDR_DARK, width=22)
-    hdr(ws_raw, 1, col+1, f"BS={bs}  Hit Rate (%)", HDR_MID,  width=18)
-    batch_col_map[bs] = (col, col+1)
-    col += 2
+    hdr(ws_raw, 1, col,   f"BS={bs}  Timestamp",          HDR_DARK,  width=22)
+    hdr(ws_raw, 1, col+1, f"BS={bs}  Hit Rate (%)",        HDR_MID,   width=18)
+    hdr(ws_raw, 1, col+2, f"BS={bs}  Gen Throughput (tok/s)", HDR_LIGHT, width=22)
+    hdr(ws_raw, 1, col+3, f"BS={bs}  KV Cache (%)",        HDR_MID,   width=18)
+    batch_col_map[bs] = (col, col+1, col+2, col+3)
+    col += 4
 
 for bs in batch_sizes:
-    ts_col, rate_col = batch_col_map[bs]
-    for r, (ts, rate) in enumerate(data[bs], start=2):
-        c_ts   = ws_raw.cell(row=r, column=ts_col,   value=ts)
+    ts_col, rate_col, gen_col, kv_col = batch_col_map[bs]
+    for r, (ts, rate, gen, kv) in enumerate(data[bs], start=2):
+        ws_raw.cell(row=r, column=ts_col,   value=ts).font   = BODY_FT
         c_rate = ws_raw.cell(row=r, column=rate_col, value=rate)
-        c_ts.font = BODY_FT
-        c_rate.font = BODY_FT
-        c_rate.number_format = "0.0"
+        c_rate.font = BODY_FT; c_rate.number_format = "0.0"
+        if gen is not None:
+            c_gen = ws_raw.cell(row=r, column=gen_col, value=gen)
+            c_gen.font = BODY_FT; c_gen.number_format = "0.0"
+        if kv is not None:
+            c_kv = ws_raw.cell(row=r, column=kv_col, value=kv)
+            c_kv.font = BODY_FT; c_kv.number_format = "0.0"
 
-# ── Sheet 2: Chart Data (index + one column per batch size) ──────────────────
+# ── Sheet 2: Chart Data ───────────────────────────────────────────────────────
+# Three sections side by side, each: Sample# | BS=x col ...
+# Section offsets (0-indexed col start within sheet):
+#   Hit Rate:       col 1
+#   Gen Throughput: col 1 + n+1 + 1  (gap of 1)
+#   KV Cache:       col 1 + (n+1+1)*2
+n = len(batch_sizes)
+SEC_GAP = 1  # blank columns between sections
+SEC_W   = 1 + n  # Sample# + n BS columns
+
+def sec_start(sec_idx):
+    return 1 + sec_idx * (SEC_W + SEC_GAP)
+
 ws_cd = wb.create_sheet("Chart Data")
 ws_cd.row_dimensions[1].height = 20
 
-ws_cd.cell(row=1, column=1, value="Sample #").font = BOLD_FT
-ws_cd.column_dimensions["A"].width = 12
+SECTIONS = [
+    ("Sample #", "Hit Rate (%)",          1),   # value index in tuple
+    ("Sample #", "Gen Throughput (tok/s)", 2),
+    ("Sample #", "KV Cache (%)",           3),
+]
 
-for idx, bs in enumerate(batch_sizes, start=2):
-    c = ws_cd.cell(row=1, column=idx, value=f"BS={bs}")
-    c.font = BOLD_FT
-    c.alignment = CENTER
-    ws_cd.column_dimensions[get_column_letter(idx)].width = 10
+for sec_i, (idx_label, metric_label, val_idx) in enumerate(SECTIONS):
+    base = sec_start(sec_i)
+    # Sample # header
+    c = ws_cd.cell(row=1, column=base, value=idx_label)
+    c.font = BOLD_FT; c.alignment = CENTER
+    ws_cd.column_dimensions[get_column_letter(base)].width = 12
+    # BS headers
+    for j, bs in enumerate(batch_sizes):
+        c = ws_cd.cell(row=1, column=base+1+j, value=f"BS={bs} {metric_label}")
+        c.font = BOLD_FT; c.alignment = CENTER
+        ws_cd.column_dimensions[get_column_letter(base+1+j)].width = max(len(f"BS={bs} {metric_label}")+2, 14)
 
 max_rows = max(len(data[bs]) for bs in batch_sizes)
 
 for row_i in range(1, max_rows + 1):
-    ws_cd.cell(row=row_i + 1, column=1, value=row_i).font = BODY_FT
-    for col_i, bs in enumerate(batch_sizes, start=2):
-        entries = data[bs]
-        if row_i <= len(entries):
-            c = ws_cd.cell(row=row_i + 1, column=col_i, value=entries[row_i - 1][1])
-            c.font = BODY_FT
-            c.number_format = "0.0"
+    for sec_i, (_, _, val_idx) in enumerate(SECTIONS):
+        base = sec_start(sec_i)
+        ws_cd.cell(row=row_i+1, column=base, value=row_i).font = BODY_FT
+        for j, bs in enumerate(batch_sizes):
+            entries = data[bs]
+            if row_i <= len(entries):
+                v = entries[row_i-1][val_idx]
+                if v is not None:
+                    c = ws_cd.cell(row=row_i+1, column=base+1+j, value=v)
+                    c.font = BODY_FT; c.number_format = "0.0"
 
-# ── Chart ─────────────────────────────────────────────────────────────────────
-chart = LineChart()
-chart.title = "Prefix Cache Hit Rate by Batch Size"
-chart.style = 10
-chart.y_axis.title = "Hit Rate (%)"
-chart.x_axis.title = "Sample Index"
-chart.y_axis.numFmt = "0.0"
-chart.y_axis.scaling.min = 0
-chart.y_axis.scaling.max = 100
-chart.height = 16
-chart.width = 30
+# ── Charts ────────────────────────────────────────────────────────────────────
+def make_chart(title, y_label, y_min, y_max, num_fmt, sec_i):
+    base = sec_start(sec_i)
+    chart = LineChart()
+    chart.title = title
+    chart.style = 10
+    chart.y_axis.title = y_label
+    chart.x_axis.title = "Sample Index"
+    chart.y_axis.numFmt = num_fmt
+    chart.y_axis.scaling.min = y_min
+    if y_max is not None:
+        chart.y_axis.scaling.max = y_max
+    chart.height = 16
+    chart.width  = 30
+    for j, bs in enumerate(batch_sizes):
+        n_rows = len(data[bs])
+        vals = Reference(ws_cd, min_col=base+1+j, min_row=1, max_row=n_rows+1)
+        chart.add_data(vals, titles_from_data=True)
+    cats = Reference(ws_cd, min_col=base, min_row=2, max_row=max_rows+1)
+    chart.set_categories(cats)
+    return chart
 
-for col_i, bs in enumerate(batch_sizes, start=2):
-    n = len(data[bs])
-    vals = Reference(ws_cd, min_col=col_i, min_row=1, max_row=n + 1)
-    chart.add_data(vals, titles_from_data=True)
-
-cats = Reference(ws_cd, min_col=1, min_row=2, max_row=max_rows + 1)
-chart.set_categories(cats)
+chart_hit  = make_chart("Prefix Cache Hit Rate by Batch Size",
+                         "Hit Rate (%)",           0, 100, "0.0", 0)
+chart_gen  = make_chart("Avg Generation Throughput by Batch Size",
+                         "Throughput (tokens/s)",  0, None, "0.0", 1)
+chart_kv   = make_chart("GPU KV Cache Usage by Batch Size",
+                         "KV Cache Usage (%)",     0, 100, "0.0", 2)
 
 # ── Chart Sheet ───────────────────────────────────────────────────────────────
 ws_chart = wb.create_sheet("Chart")
-ws_chart.add_chart(chart, "B2")
+ws_chart.add_chart(chart_hit, "B2")
+ws_chart.add_chart(chart_gen, "B35")
+ws_chart.add_chart(chart_kv,  "B68")
 
-# Sheet tab order: Raw Data | Chart Data | Chart
 wb.save(OUTPUT_FILE)
 print(f"Saved: {OUTPUT_FILE}")
