@@ -3,7 +3,7 @@ set -euo pipefail
 
 TASK_NAME="${1:?Usage: $0 <TASK_NAME>}"
 
-BATCH_SIZES=(35 30 25 20 10 5)
+BATCH_SIZES=(70 60 50 40)
 VLLM_PORT=8131
 VLLM_READY_TIMEOUT=300   # 最多等待 5 分钟
 

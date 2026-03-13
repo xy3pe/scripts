@@ -182,7 +182,7 @@ def main():
     parser = argparse.ArgumentParser(description="估算 vLLM KV Cache 命中率")
     parser.add_argument(
         "--dataset",
-        default=str(Path(__file__).parent.parent / "datasets" / "ShareGPT_V3_unfiltered_cleaned_split_origin.json"),
+        default=str(Path(__file__).parent.parent / "datasets" / "ShareGPT_multiturn_long.json"),
         help="数据集 JSON 文件路径"
     )
     args = parser.parse_args()

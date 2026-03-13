@@ -45,7 +45,7 @@ export HCCL_OP_EXPANSION_MODE="AIV"
 # Enable FlashComm_v1 optimization when tensor parallel is enabled.
 export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
 
-export ASCEND_RT_VISIBLE_DEVICES=2,3
+export ASCEND_RT_VISIBLE_DEVICES=4,5
 
 MODEL_NAME=Qwen3-32B
 
