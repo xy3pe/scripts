@@ -53,8 +53,10 @@ source /root/autodl-tmp/py_venv/vllm2/bin/activate
 
 log "Starting vllm serve (model: $MODEL_NAME) ..."
 
+set -m
+
 VLLM_LOGGING_CONFIG_PATH="$TMP_CONFIG" \
-vllm serve $MODEL_PATH/$MODEL_NAME \
+nohup vllm serve $MODEL_PATH/$MODEL_NAME \
     --dtype bfloat16 \
     --max-model-len 16k \
     --tensor-parallel-size 2 \
@@ -73,7 +75,7 @@ vllm serve $MODEL_PATH/$MODEL_NAME \
           "load_async": true,
           "register_buffer": true
       }
-  }' &
+  }' > /dev/null 2>&1 &
 
 echo $! > "$PID_FILE"
 log "vllm started (PID $(cat $PID_FILE))"
