@@ -40,6 +40,7 @@ while kill -0 "$PID" 2>/dev/null; do
     sleep 1
     i=$((i + 1))
 done
+kill -9 "$PID"
 
 rm -f "$PID_FILE"
 log "vllm stopped."
