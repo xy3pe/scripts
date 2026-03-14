@@ -29,7 +29,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 log_files = sorted(f for f in os.listdir(LOG_DIR)
                    if f.startswith(f"vllm_{TASK_NAME}_bs") and f.endswith(".log"))
 
-# data: {batch_size: [(timestamp, hit_rate, gen_throughput, kv_cache_usage), ...]}
+# data: {batch_size: [(timestamp, hit_rate, gen_throughput, kv_cache_usage, prompt_throughput, running, waiting), ...]}
 data = {}
 
 for fname in log_files:
@@ -42,16 +42,22 @@ for fname in log_files:
         for line in f:
             if "Prefix cache hit rate:" not in line:
                 continue
-            ts_m    = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
-            rate_m  = re.search(r"(?<!External )Prefix cache hit rate: ([0-9.]+)%", line)
-            gen_m   = re.search(r"Avg generation throughput: ([0-9.]+) tokens/s", line)
-            kv_m    = re.search(r"GPU KV cache usage: ([0-9.]+)%", line)
+            ts_m      = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
+            rate_m    = re.search(r"(?<!External )Prefix cache hit rate: ([0-9.]+)%", line)
+            gen_m     = re.search(r"Avg generation throughput: ([0-9.]+) tokens/s", line)
+            kv_m      = re.search(r"GPU KV cache usage: ([0-9.]+)%", line)
+            prompt_m  = re.search(r"Avg prompt throughput: ([0-9.]+) tokens/s", line)
+            running_m = re.search(r"Running: ([0-9]+) reqs", line)
+            waiting_m = re.search(r"Waiting: ([0-9]+) reqs", line)
             if ts_m and rate_m:
                 entries.append((
                     ts_m.group(1),
                     float(rate_m.group(1)),
-                    float(gen_m.group(1))  if gen_m  else None,
-                    float(kv_m.group(1))   if kv_m   else None,
+                    float(gen_m.group(1))      if gen_m      else None,
+                    float(kv_m.group(1))       if kv_m       else None,
+                    float(prompt_m.group(1))   if prompt_m   else None,
+                    int(running_m.group(1))    if running_m  else None,
+                    int(waiting_m.group(1))    if waiting_m  else None,
                 ))
     data[batch_size] = entries
 
@@ -75,34 +81,46 @@ def hdr(ws, row, col, value, fill, width=None):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 # ── Sheet 1: Raw Data ─────────────────────────────────────────────────────────
-# Layout: for each BS → Timestamp | Hit Rate (%) | Gen Throughput (tok/s) | KV Cache (%)
+# Layout per BS: Timestamp | Hit Rate | Prompt Throughput | Gen Throughput | KV Cache | Running | Waiting
 wb = Workbook()
 ws_raw = wb.active
 ws_raw.title = "Raw Data"
 ws_raw.row_dimensions[1].height = 20
 
 col = 1
-batch_col_map = {}  # {bs: (ts_col, rate_col, gen_col, kv_col)}
+batch_col_map = {}  # {bs: (ts_col, rate_col, prompt_col, gen_col, kv_col, running_col, waiting_col)}
 for bs in batch_sizes:
-    hdr(ws_raw, 1, col,   f"BS={bs}  Timestamp",          HDR_DARK,  width=22)
-    hdr(ws_raw, 1, col+1, f"BS={bs}  Hit Rate (%)",        HDR_MID,   width=18)
-    hdr(ws_raw, 1, col+2, f"BS={bs}  Gen Throughput (tok/s)", HDR_LIGHT, width=22)
-    hdr(ws_raw, 1, col+3, f"BS={bs}  KV Cache (%)",        HDR_MID,   width=18)
-    batch_col_map[bs] = (col, col+1, col+2, col+3)
-    col += 4
+    hdr(ws_raw, 1, col,   f"BS={bs}  Timestamp",                HDR_DARK,  width=22)
+    hdr(ws_raw, 1, col+1, f"BS={bs}  Hit Rate (%)",              HDR_MID,   width=18)
+    hdr(ws_raw, 1, col+2, f"BS={bs}  Prompt Throughput (tok/s)", HDR_LIGHT, width=24)
+    hdr(ws_raw, 1, col+3, f"BS={bs}  Gen Throughput (tok/s)",    HDR_LIGHT, width=22)
+    hdr(ws_raw, 1, col+4, f"BS={bs}  KV Cache (%)",              HDR_MID,   width=18)
+    hdr(ws_raw, 1, col+5, f"BS={bs}  Running (reqs)",            HDR_DARK,  width=18)
+    hdr(ws_raw, 1, col+6, f"BS={bs}  Waiting (reqs)",            HDR_DARK,  width=18)
+    batch_col_map[bs] = (col, col+1, col+2, col+3, col+4, col+5, col+6)
+    col += 7
 
 for bs in batch_sizes:
-    ts_col, rate_col, gen_col, kv_col = batch_col_map[bs]
-    for r, (ts, rate, gen, kv) in enumerate(data[bs], start=2):
-        ws_raw.cell(row=r, column=ts_col,   value=ts).font   = BODY_FT
+    ts_col, rate_col, prompt_col, gen_col, kv_col, running_col, waiting_col = batch_col_map[bs]
+    for r, (ts, rate, gen, kv, prompt, running, waiting) in enumerate(data[bs], start=2):
+        ws_raw.cell(row=r, column=ts_col, value=ts).font = BODY_FT
         c_rate = ws_raw.cell(row=r, column=rate_col, value=rate)
         c_rate.font = BODY_FT; c_rate.number_format = "0.0"
+        if prompt is not None:
+            c_prompt = ws_raw.cell(row=r, column=prompt_col, value=prompt)
+            c_prompt.font = BODY_FT; c_prompt.number_format = "0.0"
         if gen is not None:
             c_gen = ws_raw.cell(row=r, column=gen_col, value=gen)
             c_gen.font = BODY_FT; c_gen.number_format = "0.0"
         if kv is not None:
             c_kv = ws_raw.cell(row=r, column=kv_col, value=kv)
             c_kv.font = BODY_FT; c_kv.number_format = "0.0"
+        if running is not None:
+            c_running = ws_raw.cell(row=r, column=running_col, value=running)
+            c_running.font = BODY_FT; c_running.number_format = "0"
+        if waiting is not None:
+            c_waiting = ws_raw.cell(row=r, column=waiting_col, value=waiting)
+            c_waiting.font = BODY_FT; c_waiting.number_format = "0"
 
 # ── Sheet 2: Chart Data ───────────────────────────────────────────────────────
 # Three sections side by side, each: Sample# | BS=x col ...
@@ -121,9 +139,12 @@ ws_cd = wb.create_sheet("Chart Data")
 ws_cd.row_dimensions[1].height = 20
 
 SECTIONS = [
-    ("Sample #", "Hit Rate (%)",          1),   # value index in tuple
-    ("Sample #", "Gen Throughput (tok/s)", 2),
-    ("Sample #", "KV Cache (%)",           3),
+    ("Sample #", "Hit Rate (%)",             1),   # value index in tuple
+    ("Sample #", "Prompt Throughput (tok/s)", 4),
+    ("Sample #", "Gen Throughput (tok/s)",   2),
+    ("Sample #", "KV Cache (%)",             3),
+    ("Sample #", "Running (reqs)",           5),
+    ("Sample #", "Waiting (reqs)",           6),
 ]
 
 for sec_i, (idx_label, metric_label, val_idx) in enumerate(SECTIONS):
@@ -174,18 +195,27 @@ def make_chart(title, y_label, y_min, y_max, num_fmt, sec_i):
     chart.set_categories(cats)
     return chart
 
-chart_hit  = make_chart("Prefix Cache Hit Rate by Batch Size",
-                         "Hit Rate (%)",           0, 100, "0.0", 0)
-chart_gen  = make_chart("Avg Generation Throughput by Batch Size",
-                         "Throughput (tokens/s)",  0, None, "0.0", 1)
-chart_kv   = make_chart("GPU KV Cache Usage by Batch Size",
-                         "KV Cache Usage (%)",     0, 100, "0.0", 2)
+chart_hit     = make_chart("Prefix Cache Hit Rate by Batch Size",
+                            "Hit Rate (%)",           0, 100, "0.0", 0)
+chart_prompt  = make_chart("Avg Prompt Throughput by Batch Size",
+                            "Throughput (tokens/s)",  0, None, "0.0", 1)
+chart_gen     = make_chart("Avg Generation Throughput by Batch Size",
+                            "Throughput (tokens/s)",  0, None, "0.0", 2)
+chart_kv      = make_chart("GPU KV Cache Usage by Batch Size",
+                            "KV Cache Usage (%)",     0, 100, "0.0", 3)
+chart_running = make_chart("Running Requests by Batch Size",
+                            "Running (reqs)",         0, None, "0",   4)
+chart_waiting = make_chart("Waiting Requests by Batch Size",
+                            "Waiting (reqs)",         0, None, "0",   5)
 
 # ── Chart Sheet ───────────────────────────────────────────────────────────────
 ws_chart = wb.create_sheet("Chart")
-ws_chart.add_chart(chart_hit, "B2")
-ws_chart.add_chart(chart_gen, "B35")
-ws_chart.add_chart(chart_kv,  "B68")
+ws_chart.add_chart(chart_hit,     "B2")
+ws_chart.add_chart(chart_prompt,  "B35")
+ws_chart.add_chart(chart_gen,     "B68")
+ws_chart.add_chart(chart_kv,      "B101")
+ws_chart.add_chart(chart_running, "B134")
+ws_chart.add_chart(chart_waiting, "B167")
 
 wb.save(OUTPUT_FILE)
 print(f"Saved: {OUTPUT_FILE}")
