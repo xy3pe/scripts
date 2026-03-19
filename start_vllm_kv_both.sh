@@ -77,7 +77,7 @@ nohup vllm serve $MODEL_PATH/$MODEL_NAME \
           "load_async": true,
           "register_buffer": true
       }
-  }' > /dev/null 2>&1 &
+  }' >> "$SCRIPT_LOG" 2>&1 &
 
 echo $! > "$PID_FILE"
 log "vllm started (PID $(cat $PID_FILE))"

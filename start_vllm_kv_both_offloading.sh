@@ -72,9 +72,9 @@ nohup vllm serve $MODEL_PATH/$MODEL_NAME \
       "kv_connector": "OffloadingConnector",
       "kv_role": "kv_both",
       "kv_connector_extra_config": {
-            "npu_cpu_blocks": 10000
+            "num_cpu_blocks": 10000
       }
-  }' > /dev/null 2>&1 &
+  }' >> "$SCRIPT_LOG" 2>&1 &
 
 echo $! > "$PID_FILE"
 log "vllm started (PID $(cat $PID_FILE))"
