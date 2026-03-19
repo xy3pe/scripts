@@ -61,7 +61,7 @@ nohup vllm serve $MODEL_PATH/$MODEL_NAME \
     --max-model-len 32768 \
     --tensor-parallel-size 4 \
     --port 8131 \
-    --max-num-seqs 16 \
+    --max-num-seqs 100 \
     --max-num-batched-tokens 32768 \
     --gpu-memory-utilization 0.9 \
     --enable-request-id-headers \
@@ -69,13 +69,10 @@ nohup vllm serve $MODEL_PATH/$MODEL_NAME \
     --enable-auto-tool-choice \
     --tool-call-parser hermes \
     --kv-transfer-config '{
-      "kv_connector": "MooncakeConnectorStoreV1",
+      "kv_connector": "OffloadingConnector",
       "kv_role": "kv_both",
       "kv_connector_extra_config": {
-          "use_layerwise": false,
-          "mooncake_rpc_port": "0",
-          "load_async": true,
-          "register_buffer": true
+            "npu_cpu_blocks": 10000
       }
   }' > /dev/null 2>&1 &
 
