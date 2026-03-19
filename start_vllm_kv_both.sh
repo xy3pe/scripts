@@ -45,7 +45,7 @@ export HCCL_OP_EXPANSION_MODE="AIV"
 # Enable FlashComm_v1 optimization when tensor parallel is enabled.
 export VLLM_ASCEND_ENABLE_FLASHCOMM1=1
 
-export ASCEND_RT_VISIBLE_DEVICES=2,3
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 
 MODEL_NAME=Qwen3-32B
 
@@ -58,11 +58,11 @@ set -m
 VLLM_LOGGING_CONFIG_PATH="$TMP_CONFIG" \
 nohup vllm serve $MODEL_PATH/$MODEL_NAME \
     --dtype bfloat16 \
-    --max-model-len 16k \
-    --tensor-parallel-size 2 \
+    --max-model-len 65536 \
+    --tensor-parallel-size 4 \
     --port 8131 \
-    --max-num-seqs 256 \
-    --max-num-batched-tokens 8192 \
+    --max-num-seqs 16 \
+    --max-num-batched-tokens 65536 \
     --gpu-memory-utilization 0.9 \
     --enable-request-id-headers \
     --served-model-name Qwen3-32B \
