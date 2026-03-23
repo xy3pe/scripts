@@ -1,0 +1,62 @@
+# Qwen3-32B PD 分离：1 Prefill (TP=2, 卡 0-1) + 1 Decode (TP=2, 卡 2-3)，共 4 卡
+cluster_name: "Qwen3-32B_1P2_1D2"
+
+model:
+  path: "/root/autodl-tmp/models/Qwen3-32B"
+  served_name: "qwen3_32b"
+
+venv:
+  vllm: "/root/autodl-tmp/py_venv/vllm2"
+
+log_dir: "logs"   # 日志输出目录；CLI --log_dir 可覆盖
+
+paths:
+  transfer_engine_lib: "/usr/local/lib"
+  python_lib: "/root/.local/share/uv/python/cpython-3.11.15-linux-aarch64-gnu/lib"
+  code_root: "/root/autodl-tmp/code"
+  proxy_script: "vllm-ascend/examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py"
+
+network:
+  nic_name: null
+  local_ip: null
+
+vllm_defaults:
+  dtype: "bfloat16"
+  max_model_len: 32768
+  max_num_batched_tokens: 32768
+  max_num_seqs: 256
+  gpu_memory_utilization: 0.9
+  enforce_eager: true
+  trust_remote_code: true
+  enable_auto_tool_choice: true
+  tool_call_parser: "hermes"
+  seed: 1024
+  omp_num_threads: 10
+
+kv_connector:
+  type: "MooncakeConnectorV1"
+  buffer_device: "npu"
+  module_path: "vllm_ascend.distributed.mooncake_connector"
+
+prefill:
+  - name: "P0"
+    port: 9000
+    devices: "0,1"
+    tensor_parallel_size: 2
+    dp_port: 13395
+    kv_port: 20001
+    engine_id: 0
+    hccl_buffsize: 256
+
+decode:
+  - name: "D0"
+    port: 9010
+    devices: "2,3"
+    tensor_parallel_size: 2
+    dp_port: 13495
+    kv_port: 20002
+    engine_id: 1
+    hccl_buffsize: 1024
+
+proxy:
+  port: 8000
