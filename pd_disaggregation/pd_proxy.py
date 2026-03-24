@@ -6,6 +6,7 @@ PD 分离负载均衡代理。
 
 基于 vLLM disagg_proxy_demo.py 精简而来，支持：
   - 多 Prefill / Decode 实例轮询调度
+  - /v1/models 返回代理列出的模型名
   - /v1/completions 与 /v1/chat/completions
   - /status 查看集群状态
   - /health 健康检查
@@ -72,6 +73,7 @@ class Proxy:
         self.router.post(
             "/v1/chat/completions", dependencies=[Depends(self._validate_json)]
         )(self.create_chat_completion)
+        self.router.get("/v1/models", response_class=JSONResponse)(self.list_models)
         self.router.get("/status", response_class=JSONResponse)(self.get_status)
         self.router.get("/health", response_class=JSONResponse)(self.health)
 
@@ -182,6 +184,21 @@ class Proxy:
         except Exception:
             logger.exception("Error in create_chat_completion")
             raise HTTPException(status_code=500, detail="Internal proxy error")
+
+    async def list_models(self):
+        """兼容 OpenAI /v1/models 接口，返回代理配置的模型名。"""
+        import time as _time
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": self.model,
+                    "object": "model",
+                    "created": int(_time.time()),
+                    "owned_by": "pd-proxy",
+                }
+            ],
+        }
 
     async def get_status(self):
         return {
