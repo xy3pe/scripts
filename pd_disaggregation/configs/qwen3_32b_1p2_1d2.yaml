@@ -36,14 +36,34 @@ kv_connector:
   buffer_device: "npu"
   module_path: "vllm_ascend.distributed.mooncake_connector"
 
+# ─── 端口规划说明 ───
+#
+#   port     — vLLM OpenAI API 服务端口，每个实例必须唯一。
+#              建议：P 从 9000 起，D 从 9010 起，逐实例 +1。
+#
+#   dp_port  — Data-Parallel RPC 端口（VLLM_DP_MASTER_PORT / --data-parallel-rpc-port）。
+#              同角色多实例间通过此端口协调 DP 调度。
+#              规则：同角色所有实例共享同一 dp_port；P 和 D 必须使用不同值。
+#              建议：P 用 13395，D 用 13495。
+#
+#   kv_port  — KV cache transfer 端口（Mooncake connector 的数据传输通道）。
+#              P 和 D 必须使用不同值（P 是 producer，D 是 consumer）；
+#              同角色多实例可共享（由 engine_id + dp_rank 区分）。
+#              建议：P 用 20001，D 用 20002。
+#
+#   engine_id — KV connector 引擎标识。同角色所有实例使用相同 engine_id。
+#              建议：P = 0，D = 1。
+#
+# dp_size / dp_rank 由实例列表自动计算，无需手动填写。
+
 prefill:
   - name: "P0"
-    port: 9000
+    port: 9000              # API 端口
     devices: "0,1"
     tensor_parallel_size: 2
-    dp_port: 13395
-    kv_port: 20001
-    engine_id: 0
+    dp_port: 13395          # DP RPC（所有 P 共享）
+    kv_port: 20001          # KV transfer（所有 P 共享）
+    engine_id: 0            # 所有 P = 0
     hccl_buffsize: 256
 
 decode:
@@ -51,9 +71,9 @@ decode:
     port: 9010
     devices: "2,3"
     tensor_parallel_size: 2
-    dp_port: 13495
-    kv_port: 20002
-    engine_id: 1
+    dp_port: 13495          # DP RPC（所有 D 共享，与 P 不同）
+    kv_port: 20002          # KV transfer（所有 D 共享，与 P 不同）
+    engine_id: 1            # 所有 D = 1
     hccl_buffsize: 1024
 
 proxy:
