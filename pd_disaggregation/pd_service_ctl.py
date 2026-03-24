@@ -320,9 +320,13 @@ def _validate_config(cfg: ClusterConfig) -> None:
 # PID 文件管理
 # ---------------------------------------------------------------------------
 
+PID_DIR = PKG_DIR / ".pid"
+
+
 def _pid_file(name: str) -> Path:
-    """返回实例对应的 PID 文件路径。"""
-    return Path(f"/tmp/vllm_{name}.pid")
+    """返回实例对应的 PID 文件路径（存放在脚本同级 .pid/ 目录下）。"""
+    PID_DIR.mkdir(exist_ok=True)
+    return PID_DIR / f"{name}.pid"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -391,22 +395,59 @@ def _kill_pid_tree(pid: int, log: LogFn, label: str, wait_cap: int = 30) -> None
         log(f"[stop {label}] pid {pid} 在 {wait_cap}s 内仍存在，放弃。")
 
 
-def _stop_by_pid_file(pid_file: Path, label: str, log: LogFn) -> None:
-    """读取 PID 文件并停止对应进程树。"""
+def _stop_by_pid_file(pid_file: Path, label: str, log: LogFn) -> bool:
+    """读取 PID 文件并停止对应进程树。返回是否成功停止了进程。"""
     if not pid_file.is_file():
-        return
+        log(f"[stop {label}] PID 文件 {pid_file} 不存在，跳过。")
+        return False
     try:
         pid = int(pid_file.read_text().strip())
     except ValueError:
         pid_file.unlink(missing_ok=True)
-        return
+        return False
     if not _pid_alive(pid):
         pid_file.unlink(missing_ok=True)
-        return
+        log(f"[stop {label}] PID {pid} 已不存在，清理 PID 文件。")
+        return False
     log(f"[stop {label}] 结束 PID {pid}（含子进程）...")
     _kill_pid_tree(pid, log, label)
     pid_file.unlink(missing_ok=True)
     log(f"[stop {label}] 已停止。")
+    return True
+
+
+def _find_pids_by_pattern(pattern: str) -> List[int]:
+    """用 pgrep -f 按命令行模式查找进程 PID。"""
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids: List[int] = []
+    for line in (out.stdout or "").strip().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                pids.append(int(line))
+            except ValueError:
+                continue
+    return pids
+
+
+def _stop_proxy_fallback(log: LogFn) -> None:
+    """PID 文件失效时，按命令行模式兜底查杀 pd_proxy.py 进程。"""
+    pids = _find_pids_by_pattern("pd_proxy.py")
+    # 排除自身
+    my_pid = os.getpid()
+    pids = [p for p in pids if p != my_pid]
+    if not pids:
+        return
+    log(f"[stop proxy] 兜底：通过命令行匹配找到 pd_proxy.py 进程 {pids}")
+    for pid in pids:
+        _kill_pid_tree(pid, log, "proxy-fallback")
+    log("[stop proxy] 兜底清理完成。")
 
 
 # ---------------------------------------------------------------------------
@@ -832,8 +873,10 @@ echo $! > "{_pid_file('proxy')}"
 
     def stop(self) -> None:
         """停止所有实例：代理 → decode → prefill。"""
-        # 代理
-        _stop_by_pid_file(_pid_file("proxy"), "proxy", self._log)
+        # 代理：先尝试 PID 文件，失败则兜底按进程名查杀
+        stopped = _stop_by_pid_file(_pid_file("proxy"), "proxy", self._log)
+        if not stopped:
+            _stop_proxy_fallback(self._log)
 
         # decode（逆序）
         for inst in reversed(self._cfg.decode_instances):
@@ -845,15 +888,16 @@ echo $! > "{_pid_file('proxy')}"
 
     @staticmethod
     def stop_all(log: LogFn = log_default) -> None:
-        """扫描 /tmp/vllm_*.pid 停止所有残留实例（无需配置文件）。"""
-        pid_files = sorted(glob.glob("/tmp/vllm_*.pid"))
+        """扫描 .pid/ 目录停止所有残留实例（无需配置文件）。"""
+        pid_files = sorted(PID_DIR.glob("*.pid")) if PID_DIR.is_dir() else []
         if not pid_files:
-            log("未找到 /tmp/vllm_*.pid，无需停止。")
-            return
-        for pf_str in pid_files:
-            pf = Path(pf_str)
-            label = pf.stem.replace("vllm_", "")
-            _stop_by_pid_file(pf, label, log)
+            log(f"未找到 {PID_DIR}/*.pid。")
+        else:
+            for pf in pid_files:
+                label = pf.stem
+                _stop_by_pid_file(pf, label, log)
+        # 兜底查杀 proxy
+        _stop_proxy_fallback(log)
 
 
 # ---------------------------------------------------------------------------
