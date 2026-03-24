@@ -20,6 +20,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -629,7 +630,7 @@ def dry_run(cfg: ClusterConfig, log_dir: Path) -> None:
                 continue
             print(f"    {k}={diff_env[k]}")
         print(f"  Command:")
-        print(f"    {' '.join(args)}")
+        print(f"    {' '.join(shlex.quote(a) for a in args)}")
         print()
 
     if cfg.proxy_port is not None:
@@ -638,7 +639,7 @@ def dry_run(cfg: ClusterConfig, log_dir: Path) -> None:
         print(f"  PID file: {_pid_file('proxy')}")
         print(f"  Log file: {log_dir / 'proxy.log'}")
         print(f"  Command:")
-        print(f"    {' '.join(proxy_args)}")
+        print(f"    {' '.join(shlex.quote(a) for a in proxy_args)}")
         print()
 
 
@@ -687,7 +688,8 @@ class PdServiceCtl:
             raise FileNotFoundError(f"venv activate 不存在: {venv_activate}")
 
         # 通过 bash source activate 然后执行 vllm serve
-        cmd_str = " ".join(args)
+        # 用 shlex.quote 转义每个参数，防止 JSON 等特殊字符被 shell 拆解
+        cmd_str = " ".join(shlex.quote(a) for a in args)
         inner = f"""
 set -euo pipefail
 source "{venv_activate}"
