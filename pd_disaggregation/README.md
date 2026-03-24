@@ -75,8 +75,9 @@ proxy:
 
 | 文件 | 说明 |
 |------|------|
-| `qwen3_32b_1p2_2d2.yaml` | 1 Prefill (TP=2, 卡 0-1) + 2 Decode (TP=2, 卡 2-5)，共 6 卡 |
-| `qwen3_32b_1p2_1d2.yaml` | 1 Prefill (TP=2, 卡 0-1) + 1 Decode (TP=2, 卡 2-3)，共 4 卡 |
+| `qwen3_32b_1p2_2d2.yaml` | Qwen3-32B, 1P(TP=2) + 2D(TP=2)，共 6 卡 |
+| `qwen3_32b_1p2_1d2.yaml` | Qwen3-32B, 1P(TP=2) + 1D(TP=2)，共 4 卡 |
+| `qwen3_8b_1p2_2d2.yaml` | Qwen3-8B, 1P(TP=2) + 2D(TP=2)，共 6 卡 |
 
 ---
 
@@ -101,6 +102,19 @@ proxy:
   ctl.stop()
   ```
 - **说明**：`NIC_NAME` / `LOCAL_IP` 在配置中设为 `null` 时自动从 `ip` / `ifconfig` 探测。
+
+---
+
+## `pd_proxy.py`
+
+内置负载均衡代理（基于 vLLM `disagg_proxy_demo.py` 精简），支持多 P/D 实例轮询调度。当配置文件中定义了 `proxy` 段时，`pd_service_ctl.py` 会自动启动该代理。也可独立使用：
+
+```bash
+python pd_proxy.py --model qwen3_32b \
+    --prefill localhost:9000 \
+    --decode localhost:9010 localhost:9011 \
+    --port 8000
+```
 
 ---
 

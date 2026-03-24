@@ -13,8 +13,6 @@ log_dir: "logs"   # 日志输出目录；CLI --log_dir 可覆盖
 paths:
   transfer_engine_lib: "/usr/local/lib"
   python_lib: "/root/.local/share/uv/python/cpython-3.11.15-linux-aarch64-gnu/lib"
-  code_root: "/root/autodl-tmp/code"
-  proxy_script: "vllm-ascend/examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py"
 
 network:
   nic_name: null

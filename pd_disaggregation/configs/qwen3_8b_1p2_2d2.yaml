@@ -1,14 +1,14 @@
 # Qwen3-32B PD 分离：1 Prefill (TP=2, 卡 0-1) + 2 Decode (TP=2, 卡 2-5)，共 6 卡
-cluster_name: "Qwen3-32B_1P2_2D2"
+cluster_name: "Qwen3-8B_1P2_2D2"
 
 model:
-  path: "/root/autodl-tmp/models/Qwen3-32B"
-  served_name: "qwen3_32b"
+  path: "/root/autodl-tmp/models/Qwen3-8B"
+  served_name: "qwen3_8b"
 
 venv:
   vllm: "/root/autodl-tmp/py_venv/vllm2"
 
-log_dir: "logs"   # 日志输出目录；CLI --log_dir 可覆盖
+log_dir: "logs/0324_Qwen3_8B"   # 日志输出目录；CLI --log_dir 可覆盖
 
 paths:
   transfer_engine_lib: "/usr/local/lib"

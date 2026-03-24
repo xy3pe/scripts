@@ -206,8 +206,6 @@ class ClusterConfig:
     # 路径
     transfer_engine_lib: str
     python_lib: str
-    code_root: Path
-    proxy_script_rel: str
     # 网络
     nic_name: str
     local_ip: str
@@ -287,8 +285,6 @@ def load_config(path: Path) -> ClusterConfig:
         log_dir=Path(raw.get("log_dir", "logs")),
         transfer_engine_lib=paths.get("transfer_engine_lib", "/usr/local/lib"),
         python_lib=paths.get("python_lib", ""),
-        code_root=Path(paths.get("code_root", "/root/autodl-tmp/code")),
-        proxy_script_rel=paths.get("proxy_script", ""),
         nic_name=nic_name,
         local_ip=local_ip,
         vllm_defaults=raw.get("vllm_defaults") or {},
@@ -575,31 +571,23 @@ def _build_vllm_args(cfg: ClusterConfig, inst: InstanceConfig) -> List[str]:
 
 
 def _build_proxy_args(cfg: ClusterConfig) -> List[str]:
-    """构建代理启动参数列表。"""
-    proxy_script = cfg.code_root / cfg.proxy_script_rel
+    """构建内置代理 pd_proxy.py 的启动参数列表。"""
+    proxy_script = PKG_DIR / "pd_proxy.py"
     venv_python = cfg.vllm_venv / "bin" / "python3"
 
     argv = [
         str(venv_python), str(proxy_script),
-        "--port", str(cfg.proxy_port),
+        "--model", cfg.served_model_name,
         "--host", "0.0.0.0",
+        "--port", str(cfg.proxy_port),
+        "--prefill",
     ]
-
-    # prefill hosts/ports
-    argv.append("--prefiller-hosts")
-    for _ in cfg.prefill_instances:
-        argv.append(cfg.local_ip)
-    argv.append("--prefiller-ports")
     for inst in cfg.prefill_instances:
-        argv.append(str(inst.port))
+        argv.append(f"{cfg.local_ip}:{inst.port}")
 
-    # decode hosts/ports
-    argv.append("--decoder-hosts")
-    for _ in cfg.decode_instances:
-        argv.append(cfg.local_ip)
-    argv.append("--decoder-ports")
+    argv.append("--decode")
     for inst in cfg.decode_instances:
-        argv.append(str(inst.port))
+        argv.append(f"{cfg.local_ip}:{inst.port}")
 
     return argv
 
@@ -718,17 +706,13 @@ echo $! > "{_pid_file(inst.name)}"
     # ---------- 启动代理 ----------
 
     def start_proxy(self, log_dir: Path) -> None:
-        """启动负载均衡代理。"""
+        """启动内置负载均衡代理 pd_proxy.py。"""
         if self._cfg.proxy_port is None:
             self._log("配置中未定义 proxy，跳过。")
             return
 
         log_dir = log_dir.resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
-
-        proxy_script = self._cfg.code_root / self._cfg.proxy_script_rel
-        if not proxy_script.is_file():
-            raise FileNotFoundError(f"代理脚本不存在: {proxy_script}")
 
         proxy_args = _build_proxy_args(self._cfg)
         cmd_str = " ".join(f'"{a}"' if " " in a else a for a in proxy_args)
