@@ -35,7 +35,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 logger = logging.getLogger("pd_proxy")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 
 class SchedulingPolicy(ABC):
