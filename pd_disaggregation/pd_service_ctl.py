@@ -204,6 +204,7 @@ class ClusterConfig:
     vllm_venv: Path
     # 日志
     log_dir: Path
+    log_level: str              # DEBUG / INFO / WARNING / ERROR
     # 路径
     transfer_engine_lib: str
     python_lib: str
@@ -284,6 +285,7 @@ def load_config(path: Path) -> ClusterConfig:
         served_model_name=raw["model"].get("served_name", "default"),
         vllm_venv=Path(venv["vllm"]),
         log_dir=Path(raw.get("log_dir", "logs")),
+        log_level=raw.get("log_level", "INFO").upper(),
         transfer_engine_lib=paths.get("transfer_engine_lib", "/usr/local/lib"),
         python_lib=paths.get("python_lib", ""),
         nic_name=nic_name,
@@ -522,6 +524,7 @@ def _build_env(cfg: ClusterConfig, inst: InstanceConfig) -> Dict[str, str]:
         "TASK_QUEUE_ENABLE": "1",
         "VLLM_WORKER_MULTIPROC_METHOD": "fork",
         "VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED": "1",
+        "VLLM_LOGGING_LEVEL": cfg.log_level,
     })
     return env
 

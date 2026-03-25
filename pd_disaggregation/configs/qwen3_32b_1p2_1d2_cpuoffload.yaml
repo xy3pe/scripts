@@ -10,6 +10,8 @@ venv:
 
 log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/0325_32B_1P2_1D2"   # 日志输出目录；CLI --log_dir 可覆盖
 
+log_level: "INFO"  # 日志级别：DEBUG / INFO / WARNING / ERROR
+
 paths:
   transfer_engine_lib: "/usr/local/lib"
   python_lib: "/root/.local/share/uv/python/cpython-3.11.15-linux-aarch64-gnu/lib"

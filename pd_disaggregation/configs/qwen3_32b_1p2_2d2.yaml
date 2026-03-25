@@ -9,6 +9,7 @@ venv:
   vllm: "/root/autodl-tmp/py_venv/vllm2"
 
 log_dir: "logs"   # 日志输出目录；CLI --log_dir 可覆盖
+log_level: "INFO"  # 日志级别：DEBUG / INFO / WARNING / ERROR
 
 paths:
   transfer_engine_lib: "/usr/local/lib"
