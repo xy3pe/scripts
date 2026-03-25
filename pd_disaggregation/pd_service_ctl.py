@@ -554,8 +554,24 @@ def _build_kv_transfer_config(cfg: ClusterConfig, inst: InstanceConfig) -> str:
     return json.dumps(kv_config)
 
 
+def _yaml_key_to_flag(key: str) -> str:
+    """将 YAML key 转为 CLI flag: ``max_model_len`` → ``--max-model-len``。"""
+    return "--" + key.replace("_", "-")
+
+
+# 不映射到 CLI flag 的内部 key（仅用于环境变量或特殊处理）
+_SKIP_KEYS = {"omp_num_threads"}
+
+
 def _build_vllm_args(cfg: ClusterConfig, inst: InstanceConfig) -> List[str]:
-    """构建 ``vllm serve ...`` 的完整参数列表。"""
+    """构建 ``vllm serve ...`` 的完整参数列表。
+
+    ``vllm_defaults`` 与实例 ``overrides`` 合并后，自动将每个 key
+    转为 ``--key-name value`` 形式的 CLI 参数：
+    - 值为 ``true`` 的布尔型 → 仅追加 flag（如 ``--enforce-eager``）
+    - 值为 ``false`` 的布尔型 → 跳过
+    - 其他 → ``--flag value``
+    """
     defaults = cfg.vllm_defaults
     merged = {**defaults, **inst.overrides}
 
@@ -567,33 +583,17 @@ def _build_vllm_args(cfg: ClusterConfig, inst: InstanceConfig) -> List[str]:
         "--served-model-name", cfg.served_model_name,
     ]
 
-    # dtype
-    if merged.get("dtype"):
-        args.extend(["--dtype", str(merged["dtype"])])
-
-    # 数值参数
-    for key, flag in [
-        ("max_model_len", "--max-model-len"),
-        ("max_num_batched_tokens", "--max-num-batched-tokens"),
-        ("max_num_seqs", "--max-num-seqs"),
-        ("gpu_memory_utilization", "--gpu-memory-utilization"),
-        ("seed", "--seed"),
-    ]:
-        if key in merged:
-            args.extend([flag, str(merged[key])])
-
-    # 布尔开关
-    for key, flag in [
-        ("enforce_eager", "--enforce-eager"),
-        ("trust_remote_code", "--trust-remote-code"),
-        ("enable_auto_tool_choice", "--enable-auto-tool-choice"),
-    ]:
-        if merged.get(key):
-            args.append(flag)
-
-    # tool-call-parser
-    if merged.get("tool_call_parser"):
-        args.extend(["--tool-call-parser", str(merged["tool_call_parser"])])
+    # 通用参数映射
+    for key, value in merged.items():
+        if key in _SKIP_KEYS:
+            continue
+        flag = _yaml_key_to_flag(key)
+        if isinstance(value, bool):
+            if value:
+                args.append(flag)
+            # False → 不加 flag
+        else:
+            args.extend([flag, str(value)])
 
     # decode 多实例时加 data-parallel 参数
     if inst.role == "decode" and inst.dp_size > 1:
