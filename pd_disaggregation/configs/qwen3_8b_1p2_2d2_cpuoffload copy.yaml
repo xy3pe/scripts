@@ -1,0 +1,94 @@
+# Qwen3-8B PD 分离：1 Prefill (TP=1, 卡 3) + 2 Decode (TP=1, 卡 4-5)，共 3 卡
+cluster_name: "Qwen3-8B_1P2_2D2"
+
+model:
+  path: "/root/autodl-tmp/models/Qwen3-8B"
+  served_name: "qwen3_8b"
+
+venv:
+  vllm: "/root/autodl-tmp/pxy/venv/pxy_dev"
+
+log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/Qwen3-8B_1P2_2D2"   # 日志输出目录；CLI --log_dir 可覆盖
+
+paths:
+  transfer_engine_lib: "/usr/local/lib"
+  python_lib: "/root/.local/share/uv/python/cpython-3.11.15-linux-aarch64-gnu/lib"
+
+# null = 自动探测；显式指定则覆盖
+network:
+  nic_name: null
+  local_ip: null
+
+# vLLM serve 默认参数，所有实例共享；实例级 overrides 可覆盖任意项
+vllm_defaults:
+  dtype: "bfloat16"
+  max_model_len: 32768
+  max_num_batched_tokens: 32768
+  max_num_seqs: 256
+  gpu_memory_utilization: 0.9
+  enforce_eager: true
+  trust_remote_code: true
+  enable_auto_tool_choice: true
+  tool_call_parser: "hermes"
+  seed: 1024
+  omp_num_threads: 10
+  num-release-cpu-blocks: 1000
+
+# KV cache transfer connector 共享配置
+kv_connector:
+  type: "MooncakeConnectorV1"
+  buffer_device: "npu"
+  module_path: "vllm_ascend.distributed.mooncake_connector"
+
+# ─── 端口规划说明 ───
+#
+#   port     — vLLM OpenAI API 服务端口，每个实例必须唯一。
+#              建议：P 从 9000 起，D 从 9010 起，逐实例 +1。
+#
+#   dp_port  — Data-Parallel RPC 端口（VLLM_DP_MASTER_PORT / --data-parallel-rpc-port）。
+#              同角色多实例间通过此端口协调 DP 调度。
+#              规则：同角色所有实例共享同一 dp_port；P 和 D 必须使用不同值。
+#              建议：P 用 13395，D 用 13495。
+#
+#   kv_port  — KV cache transfer 端口（Mooncake connector 的数据传输通道）。
+#              P 和 D 必须使用不同值（P 是 producer，D 是 consumer）；
+#              同角色多实例可共享（由 engine_id + dp_rank 区分）。
+#              建议：P 用 20001，D 用 20002。
+#
+#   engine_id — KV connector 引擎标识。同角色所有实例使用相同 engine_id。
+#              建议：P = 0，D = 1。
+#
+# dp_size / dp_rank 由实例列表自动计算，无需手动填写。
+
+prefill:
+  - name: "P0"
+    port: 6000              # API 端口
+    devices: "3"
+    tensor_parallel_size: 1
+    dp_port: 12395          # DP RPC（所有 P 共享）
+    kv_port: 21001          # KV transfer（所有 P 共享）
+    engine_id: 0            # 所有 P = 0
+    hccl_buffsize: 256
+
+decode:
+  - name: "D0"
+    port: 6010
+    devices: "4"
+    tensor_parallel_size: 1
+    dp_port: 12495          # DP RPC（所有 D 共享，与 P 不同）
+    kv_port: 21002          # KV transfer（所有 D 共享，与 P 不同）
+    engine_id: 1            # 所有 D = 1
+    hccl_buffsize: 512
+
+  - name: "D1"
+    port: 6011
+    devices: "5"
+    tensor_parallel_size: 1
+    dp_port: 12495
+    kv_port: 21002
+    engine_id: 1
+    hccl_buffsize: 512
+
+# 负载均衡代理；设为 null 或删除此段则不启代理
+proxy:
+  port: 8050

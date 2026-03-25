@@ -1,14 +1,14 @@
 # Qwen3-8B PD 分离：1 Prefill (TP=1, 卡 3) + 2 Decode (TP=1, 卡 4-5)，共 3 卡
-cluster_name: "Qwen3-8B_1P2_2D2"
+cluster_name: "Qwen3-32B_1P2_1D2"
 
 model:
-  path: "/root/autodl-tmp/models/Qwen3-8B"
-  served_name: "qwen3_8b"
+  path: "/root/autodl-tmp/models/Qwen3-32B"
+  served_name: "qwen3_32b"
 
 venv:
-  vllm: "/root/autodl-tmp/py_venv/vllm2"
+  vllm: "/root/autodl-tmp/pxy/venv/pxy_dev"
 
-log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/Qwen3-8B_1P2_2D2"   # 日志输出目录；CLI --log_dir 可覆盖
+log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/0325_32B_1P2_1D2"   # 日志输出目录；CLI --log_dir 可覆盖
 
 paths:
   transfer_engine_lib: "/usr/local/lib"
@@ -32,7 +32,7 @@ vllm_defaults:
   tool_call_parser: "hermes"
   seed: 1024
   omp_num_threads: 10
-  num-release-cpu-blocks: 1000
+  num-release-cpu-blocks: 5000
 
 # KV cache transfer connector 共享配置
 kv_connector:
@@ -63,8 +63,8 @@ kv_connector:
 prefill:
   - name: "P0"
     port: 6000              # API 端口
-    devices: "3"
-    tensor_parallel_size: 1
+    devices: "0,1"
+    tensor_parallel_size: 2
     dp_port: 12395          # DP RPC（所有 P 共享）
     kv_port: 21001          # KV transfer（所有 P 共享）
     engine_id: 0            # 所有 P = 0
@@ -73,21 +73,13 @@ prefill:
 decode:
   - name: "D0"
     port: 6010
-    devices: "4"
-    tensor_parallel_size: 1
+    devices: "2,3"
+    tensor_parallel_size: 2
     dp_port: 12495          # DP RPC（所有 D 共享，与 P 不同）
     kv_port: 21002          # KV transfer（所有 D 共享，与 P 不同）
     engine_id: 1            # 所有 D = 1
     hccl_buffsize: 512
 
-  - name: "D1"
-    port: 6011
-    devices: "5"
-    tensor_parallel_size: 1
-    dp_port: 12495
-    kv_port: 21002
-    engine_id: 1
-    hccl_buffsize: 512
 
 # 负载均衡代理；设为 null 或删除此段则不启代理
 proxy:
