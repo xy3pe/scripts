@@ -24,8 +24,10 @@ import json
 import logging
 import os
 import sys
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
@@ -60,15 +62,19 @@ class Proxy:
         decode_instances: list[str],
         model: str,
         scheduling_policy: SchedulingPolicy | None = None,
+        prefill_only: bool = False,
     ):
         self.prefill_instances = prefill_instances
         self.decode_instances = decode_instances
         self.prefill_cycler = itertools.cycle(prefill_instances)
-        self.decode_cycler = itertools.cycle(decode_instances)
+        self.decode_cycler = itertools.cycle(decode_instances) if decode_instances else None
         self.model = model
         self.scheduling_policy = scheduling_policy or RoundRobinSchedulingPolicy()
+        self.prefill_only = prefill_only
         self.router = APIRouter()
         self._setup_routes()
+        if prefill_only:
+            logger.info("Running in PREFILL-ONLY mode: decode stage is stubbed out")
 
     def _setup_routes(self):
         self.router.post(
@@ -120,6 +126,44 @@ class Proxy:
             self.prefill_instances.remove(instance)
             self.prefill_cycler = itertools.cycle(self.prefill_instances)
 
+    def _stub_completion_response(self, request: dict) -> JSONResponse:
+        """prefill-only 模式下的 decode 打桩响应（completions）。"""
+        is_stream = request.get("stream", False)
+        stub = {
+            "id": "cmpl-stub",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": self.model,
+            "choices": [{"text": "", "index": 0, "logprobs": None, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        if is_stream:
+            body = f"data: {json.dumps(stub)}\n\ndata: [DONE]\n\n"
+            return StreamingResponse(iter([body.encode()]), media_type="text/event-stream")
+        return JSONResponse(content=stub)
+
+    def _stub_chat_completion_response(self, request: dict) -> JSONResponse:
+        """prefill-only 模式下的 decode 打桩响应（chat/completions）。"""
+        is_stream = request.get("stream", False)
+        stub = {
+            "id": "chatcmpl-stub",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": self.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        if is_stream:
+            body = f"data: {json.dumps(stub)}\n\ndata: [DONE]\n\n"
+            return StreamingResponse(iter([body.encode()]), media_type="text/event-stream")
+        return JSONResponse(content=stub)
+
     async def create_completion(self, raw_request: Request):
         try:
             request = await raw_request.json()
@@ -138,7 +182,11 @@ class Proxy:
                 self._remove_instance("prefill", prefill)
                 raise e
 
-            # Decode stage
+            # Decode stage（打桩模式下跳过，直接返回空响应）
+            if self.prefill_only:
+                logger.debug("prefill-only: skipping decode for completion request")
+                return self._stub_completion_response(request)
+
             decode = self._schedule(self.decode_cycler)
             try:
                 generator = self._forward_request(
@@ -173,6 +221,11 @@ class Proxy:
             except HTTPException as e:
                 self._remove_instance("prefill", prefill)
                 raise e
+
+            # Decode stage（打桩模式下跳过，直接返回空响应）
+            if self.prefill_only:
+                logger.debug("prefill-only: skipping decode for chat completion request")
+                return self._stub_chat_completion_response(request)
 
             decode = self._schedule(self.decode_cycler)
             try:
@@ -236,6 +289,7 @@ class Proxy:
             "decode_count": len(self.decode_instances),
             "prefill_nodes": self.prefill_instances,
             "decode_nodes": self.decode_instances,
+            "prefill_only": self.prefill_only,
         }
 
     async def health(self):
@@ -246,12 +300,61 @@ def create_app(
     prefill_instances: list[str],
     decode_instances: list[str],
     model: str,
+    prefill_only: bool = False,
 ) -> FastAPI:
     """创建 FastAPI app（供 pd_service_ctl 直接调用）。"""
     app = FastAPI(title="PD Proxy")
-    proxy = Proxy(prefill_instances, decode_instances, model)
+    proxy = Proxy(prefill_instances, decode_instances, model, prefill_only=prefill_only)
     app.include_router(proxy.router)
     return app
+
+
+PKG_DIR = Path(__file__).resolve().parent
+PID_DIR = PKG_DIR / ".pid"
+
+
+def _pid_file() -> Path:
+    PID_DIR.mkdir(exist_ok=True)
+    return PID_DIR / "proxy.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _collect_pid_tree(root: int) -> set[int]:
+    import subprocess as _sp
+    try:
+        out = _sp.run(
+            ["pgrep", "-P", str(root)],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        children = {int(p) for p in out.stdout.split() if p.strip()}
+    except Exception:
+        children = set()
+    result = {root}
+    for child in children:
+        result |= _collect_pid_tree(child)
+    return result
+
+
+def _kill_pid_tree(pid: int) -> None:
+    import signal as _signal
+    tree = _collect_pid_tree(pid)
+    others = sorted(tree - {pid}, reverse=True)
+    for p in others:
+        try:
+            os.kill(p, _signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        os.kill(pid, _signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def run_proxy(
@@ -260,36 +363,136 @@ def run_proxy(
     model: str,
     host: str = "0.0.0.0",
     port: int = 8000,
+    prefill_only: bool = False,
 ) -> None:
-    """一键启动代理服务（阻塞）。"""
-    app = create_app(prefill_instances, decode_instances, model)
-    config = uvicorn.Config(app, host=host, port=port, loop="uvloop")
-    server = uvicorn.Server(config)
-    server.run()
+    """一键启动代理服务（阻塞）。启动时写入 PID 文件，退出时清理。"""
+    pid_file = _pid_file()
+    pid_file.write_text(str(os.getpid()))
+    logger.info("PID %d 已写入 %s", os.getpid(), pid_file)
+    try:
+        app = create_app(prefill_instances, decode_instances, model, prefill_only=prefill_only)
+        config = uvicorn.Config(app, host=host, port=port, loop="uvloop")
+        server = uvicorn.Server(config)
+        server.run()
+    finally:
+        pid_file.unlink(missing_ok=True)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="PD disaggregated proxy server")
-    parser.add_argument("--model", "-m", type=str, required=True, help="Model name")
-    parser.add_argument(
-        "--prefill", "-p", type=str, nargs="+", required=True,
-        help="Prefill instance URLs (host:port)",
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _cmd_start(args) -> int:
+    """start 子命令：从 YAML 配置加载参数并启动代理（前台阻塞）。"""
+    from pd_service_ctl import load_config  # 按需导入，避免启动时拖慢
+
+    cfg = load_config(args.config)
+
+    if cfg.proxy_port is None:
+        logger.error("配置文件中未定义 proxy.port，无法启动代理")
+        return 1
+
+    prefill_addrs = [f"{cfg.local_ip}:{inst.port}" for inst in cfg.prefill_instances]
+    decode_addrs  = [f"{cfg.local_ip}:{inst.port}" for inst in cfg.decode_instances]
+    # 命令行显式指定时覆盖配置文件中的值
+    if args.prefill_only is not None:
+        prefill_only = args.prefill_only
+    else:
+        prefill_only = cfg.proxy_prefill_only
+
+    logger.info(
+        "启动代理 port=%d prefill=%s decode=%s prefill_only=%s",
+        cfg.proxy_port, prefill_addrs, decode_addrs, prefill_only,
     )
-    parser.add_argument(
-        "--decode", "-d", type=str, nargs="+", required=True,
-        help="Decode instance URLs (host:port)",
+    run_proxy(
+        prefill_instances=prefill_addrs,
+        decode_instances=decode_addrs,
+        model=cfg.served_model_name,
+        host="0.0.0.0",
+        port=cfg.proxy_port,
+        prefill_only=prefill_only,
     )
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Bind host")
-    parser.add_argument("--port", type=int, default=8000, help="Bind port")
-    return parser.parse_args()
+    return 0
+
+
+def _cmd_stop(_args) -> int:
+    """stop 子命令：通过 PID 文件停止代理进程。"""
+    pf = _pid_file()
+    if not pf.is_file():
+        logger.warning("PID 文件 %s 不存在，尝试按进程名兜底查杀", pf)
+        return _stop_by_name_fallback()
+
+    try:
+        pid = int(pf.read_text().strip())
+    except ValueError:
+        pf.unlink(missing_ok=True)
+        logger.error("PID 文件内容无效，已删除")
+        return 1
+
+    if not _pid_alive(pid):
+        pf.unlink(missing_ok=True)
+        logger.info("PID %d 已不存在，清理 PID 文件", pid)
+        return 0
+
+    logger.info("停止代理进程 PID %d ...", pid)
+    _kill_pid_tree(pid)
+    pf.unlink(missing_ok=True)
+    logger.info("代理已停止")
+    return 0
+
+
+def _stop_by_name_fallback() -> int:
+    import subprocess as _sp
+    my_pid = os.getpid()
+    try:
+        out = _sp.run(
+            ["pgrep", "-f", "pd_proxy.py"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        pids = [int(p) for p in out.stdout.split() if p.strip() and int(p) != my_pid]
+    except Exception:
+        pids = []
+    if not pids:
+        logger.info("未找到运行中的 pd_proxy.py 进程")
+        return 0
+    for pid in pids:
+        logger.info("兜底停止 PID %d", pid)
+        _kill_pid_tree(pid)
+    return 0
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="PD 代理启停（配置驱动）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""示例：
+  python pd_proxy.py start --config configs/qwen3_32b_1p2_1d2.yaml
+  python pd_proxy.py stop
+""",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_start = sub.add_parser("start", help="启动代理服务（前台运行）")
+    p_start.add_argument(
+        "--config", "-c", type=Path, required=True,
+        help="YAML 配置文件路径",
+    )
+    po = p_start.add_mutually_exclusive_group()
+    po.add_argument(
+        "--prefill-only", dest="prefill_only", action="store_true", default=None,
+        help="强制开启 prefill-only 模式（decode 打桩），覆盖配置文件中的值",
+    )
+    po.add_argument(
+        "--no-prefill-only", dest="prefill_only", action="store_false",
+        help="强制关闭 prefill-only 模式，覆盖配置文件中的值",
+    )
+
+    sub.add_parser("stop", help="停止代理服务（通过 PID 文件）")
+
+    return parser
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    run_proxy(
-        prefill_instances=args.prefill,
-        decode_instances=args.decode,
-        model=args.model,
-        host=args.host,
-        port=args.port,
-    )
+    args = build_cli_parser().parse_args()
+    sys.exit(_cmd_start(args) if args.cmd == "start" else _cmd_stop(args))

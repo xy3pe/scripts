@@ -221,6 +221,8 @@ class ClusterConfig:
     decode_instances: List[InstanceConfig]
     # 代理
     proxy_port: Optional[int]       # None = 不启代理
+    proxy_prefill_only: bool = False  # True = decode 阶段打桩，专用于压测 prefill
+    config_path: Optional[Path] = None  # 原始配置文件路径（供 pd_proxy.py start --config 使用）
     # 就绪等待
     ready_timeout_s: int = 300
     proxy_sleep_s: int = 10
@@ -276,6 +278,7 @@ def load_config(path: Path) -> ClusterConfig:
     # 代理
     proxy_raw = raw.get("proxy")
     proxy_port = proxy_raw["port"] if proxy_raw else None
+    proxy_prefill_only = bool(proxy_raw.get("prefill_only", False)) if proxy_raw else False
 
     # venv
     venv = raw.get("venv") or {}
@@ -299,6 +302,8 @@ def load_config(path: Path) -> ClusterConfig:
         prefill_instances=prefill_instances,
         decode_instances=decode_instances,
         proxy_port=proxy_port,
+        proxy_prefill_only=proxy_prefill_only,
+        config_path=Path(path).resolve(),
     )
 
     # 校验
@@ -624,22 +629,8 @@ def _build_proxy_args(cfg: ClusterConfig) -> List[str]:
     """构建内置代理 pd_proxy.py 的启动参数列表。"""
     proxy_script = PKG_DIR / "pd_proxy.py"
     venv_python = cfg.vllm_venv / "bin" / "python3"
-
-    argv = [
-        str(venv_python), str(proxy_script),
-        "--model", cfg.served_model_name,
-        "--host", "0.0.0.0",
-        "--port", str(cfg.proxy_port),
-        "--prefill",
-    ]
-    for inst in cfg.prefill_instances:
-        argv.append(f"{cfg.local_ip}:{inst.port}")
-
-    argv.append("--decode")
-    for inst in cfg.decode_instances:
-        argv.append(f"{cfg.local_ip}:{inst.port}")
-
-    return argv
+    config_path = cfg.config_path or proxy_script.parent  # 兜底：不应发生
+    return [str(venv_python), str(proxy_script), "start", "--config", str(config_path)]
 
 
 # ---------------------------------------------------------------------------
