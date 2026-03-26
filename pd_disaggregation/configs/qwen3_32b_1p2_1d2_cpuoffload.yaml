@@ -38,6 +38,7 @@ vllm_defaults:
 # Prefill 专属参数（覆盖 vllm_defaults 中的同名项）
 prefill_defaults:
   enable_chunked_prefill: true
+  long-prefill-token-threshold: 16384
   num-release-cpu-blocks: 5000
 
 # Decode 专属参数（覆盖 vllm_defaults 中的同名项）
