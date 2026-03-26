@@ -78,6 +78,7 @@ class Proxy:
             "/v1/chat/completions", dependencies=[Depends(self._validate_json)]
         )(self.create_chat_completion)
         self.router.get("/v1/models", response_class=JSONResponse)(self.list_models)
+        self.router.post("/v1/release_kv_cache", response_class=JSONResponse)(self.release_kv_cache)
         self.router.get("/status", response_class=JSONResponse)(self.get_status)
         self.router.get("/health", response_class=JSONResponse)(self.health)
 
@@ -203,6 +204,31 @@ class Proxy:
                 }
             ],
         }
+
+    async def release_kv_cache(self, raw_request: Request):
+        """广播 POST /v1/release_kv_cache 到所有 prefill + decode 实例。"""
+        try:
+            body = await raw_request.json()
+        except Exception:
+            body = {}
+
+        all_instances = self.prefill_instances + self.decode_instances
+        results = {}
+        async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+            for inst in all_instances:
+                url = f"http://{inst}/v1/release_kv_cache"
+                try:
+                    async with session.post(url, json=body) as resp:
+                        results[inst] = {"status": resp.status, "body": await resp.text()}
+                except aiohttp.ClientError as e:
+                    logger.error("release_kv_cache to %s failed: %s", inst, e)
+                    results[inst] = {"status": 502, "body": str(e)}
+
+        failed = {k: v for k, v in results.items() if v["status"] >= 400}
+        if failed:
+            logger.warning("release_kv_cache partial failure: %s", failed)
+
+        return {"total": len(all_instances), "success": len(all_instances) - len(failed), "details": results}
 
     async def get_status(self):
         return {
