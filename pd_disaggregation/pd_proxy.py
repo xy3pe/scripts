@@ -19,6 +19,7 @@ PD 分离负载均衡代理。
 from __future__ import annotations
 
 import argparse
+import asyncio
 import itertools
 import json
 import logging
@@ -126,6 +127,14 @@ class Proxy:
             self.prefill_instances.remove(instance)
             self.prefill_cycler = itertools.cycle(self.prefill_instances)
 
+    async def _drain_decode(self, decode: str, path: str, data: dict) -> None:
+        """prefill-only 模式：向 decode 发最小请求触发 KV pull，静默消费响应。"""
+        try:
+            async for _ in self._forward_request(f"http://{decode}{path}", data):
+                pass
+        except Exception as e:
+            logger.debug("prefill-only drain decode %s%s: %s", decode, path, e)
+
     def _stub_completion_response(self, request: dict) -> JSONResponse:
         """prefill-only 模式下的 decode 打桩响应（completions）。"""
         is_stream = request.get("stream", False)
@@ -182,12 +191,17 @@ class Proxy:
                 self._remove_instance("prefill", prefill)
                 raise e
 
-            # Decode stage（打桩模式下跳过，直接返回空响应）
+            # Decode stage
+            decode = self._schedule(self.decode_cycler)
             if self.prefill_only:
-                logger.debug("prefill-only: skipping decode for completion request")
+                # prefill-only 模式：向 decode 发 max_tokens=1 触发 KV pull，
+                # 后台消费响应（不阻塞客户端），立即返回 stub。
+                kv_drain = request.copy()
+                kv_drain["max_tokens"] = 1
+                kv_drain.pop("stream", None)  # 用非流式，drain 更简单
+                asyncio.ensure_future(self._drain_decode(decode, "/v1/completions", kv_drain))
                 return self._stub_completion_response(request)
 
-            decode = self._schedule(self.decode_cycler)
             try:
                 generator = self._forward_request(
                     f"http://{decode}/v1/completions", request
@@ -222,12 +236,16 @@ class Proxy:
                 self._remove_instance("prefill", prefill)
                 raise e
 
-            # Decode stage（打桩模式下跳过，直接返回空响应）
+            # Decode stage
+            decode = self._schedule(self.decode_cycler)
             if self.prefill_only:
-                logger.debug("prefill-only: skipping decode for chat completion request")
+                kv_drain = request.copy()
+                kv_drain["max_tokens"] = 1
+                kv_drain["max_completion_tokens"] = 1
+                kv_drain.pop("stream", None)
+                asyncio.ensure_future(self._drain_decode(decode, "/v1/chat/completions", kv_drain))
                 return self._stub_chat_completion_response(request)
 
-            decode = self._schedule(self.decode_cycler)
             try:
                 generator = self._forward_request(
                     f"http://{decode}/v1/chat/completions", request
