@@ -619,8 +619,9 @@ def _build_vllm_args(cfg: ClusterConfig, inst: InstanceConfig) -> List[str]:
             "--data-parallel-size-local", "1",
         ])
 
-    # kv-transfer-config
-    args.extend(["--kv-transfer-config", _build_kv_transfer_config(cfg, inst)])
+    # kv-transfer-config（prefill-only 模式下 prefill 实例不挂 KV connector）
+    if not (cfg.proxy_prefill_only and inst.role == "prefill"):
+        args.extend(["--kv-transfer-config", _build_kv_transfer_config(cfg, inst)])
 
     return args
 
@@ -840,20 +841,23 @@ echo $! > "{_pid_file('proxy')}"
                     self.stop()
                     return 1
 
-        # 启动 decode
-        for inst in self._cfg.decode_instances:
-            try:
-                self.start_instance(inst, log_dir)
-            except (FileNotFoundError, subprocess.CalledProcessError) as e:
-                self._log(f"ERROR: {inst.name} 启动失败: {e}")
-                self.stop()
-                return 1
-
-        if wait_ready:
+        # 启动 decode（prefill-only 模式下跳过，prefill 不挂 KV connector，无需 decode 节点）
+        if self._cfg.proxy_prefill_only:
+            self._log("prefill-only 模式：跳过 decode 实例启动")
+        else:
             for inst in self._cfg.decode_instances:
-                if not self.wait_for_port(inst.port, f"decode[{inst.name}]"):
+                try:
+                    self.start_instance(inst, log_dir)
+                except (FileNotFoundError, subprocess.CalledProcessError) as e:
+                    self._log(f"ERROR: {inst.name} 启动失败: {e}")
                     self.stop()
                     return 1
+
+            if wait_ready:
+                for inst in self._cfg.decode_instances:
+                    if not self.wait_for_port(inst.port, f"decode[{inst.name}]"):
+                        self.stop()
+                        return 1
 
         # 启动代理
         if wp:

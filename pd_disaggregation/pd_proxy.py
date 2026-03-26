@@ -19,7 +19,6 @@ PD 分离负载均衡代理。
 from __future__ import annotations
 
 import argparse
-import asyncio
 import itertools
 import json
 import logging
@@ -127,61 +126,28 @@ class Proxy:
             self.prefill_instances.remove(instance)
             self.prefill_cycler = itertools.cycle(self.prefill_instances)
 
-    async def _drain_decode(self, decode: str, path: str, data: dict) -> None:
-        """prefill-only 模式：向 decode 发最小请求触发 KV pull，静默消费响应。"""
-        try:
-            async for _ in self._forward_request(f"http://{decode}{path}", data):
-                pass
-        except Exception as e:
-            logger.debug("prefill-only drain decode %s%s: %s", decode, path, e)
-
-    def _stub_completion_response(self, request: dict) -> JSONResponse:
-        """prefill-only 模式下的 decode 打桩响应（completions）。"""
-        is_stream = request.get("stream", False)
-        stub = {
-            "id": "cmpl-stub",
-            "object": "text_completion",
-            "created": int(time.time()),
-            "model": self.model,
-            "choices": [{"text": "", "index": 0, "logprobs": None, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        }
-        if is_stream:
-            body = f"data: {json.dumps(stub)}\n\ndata: [DONE]\n\n"
-            return StreamingResponse(iter([body.encode()]), media_type="text/event-stream")
-        return JSONResponse(content=stub)
-
-    def _stub_chat_completion_response(self, request: dict) -> JSONResponse:
-        """prefill-only 模式下的 decode 打桩响应（chat/completions）。"""
-        is_stream = request.get("stream", False)
-        stub = {
-            "id": "chatcmpl-stub",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": self.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": ""},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        }
-        if is_stream:
-            body = f"data: {json.dumps(stub)}\n\ndata: [DONE]\n\n"
-            return StreamingResponse(iter([body.encode()]), media_type="text/event-stream")
-        return JSONResponse(content=stub)
-
     async def create_completion(self, raw_request: Request):
         try:
             request = await raw_request.json()
+            prefill = self._schedule(self.prefill_cycler)
 
-            # Prefill stage: max_tokens=1 to trigger KV cache transfer
+            if self.prefill_only:
+                # prefill-only 模式：无 KV connector，直接将 prefill 响应返回客户端
+                # max_tokens=1 确保 prefill 完成后立即返回，测量真实 TTFT
+                kv_prepare = request.copy()
+                kv_prepare["max_tokens"] = 1
+                try:
+                    generator = self._forward_request(
+                        f"http://{prefill}/v1/completions", kv_prepare
+                    )
+                except HTTPException as e:
+                    self._remove_instance("prefill", prefill)
+                    raise e
+                return StreamingResponse(generator)
+
+            # 标准 PD 流程：prefill → KV transfer → decode
             kv_prepare = request.copy()
             kv_prepare["max_tokens"] = 1
-
-            prefill = self._schedule(self.prefill_cycler)
             try:
                 async for _ in self._forward_request(
                     f"http://{prefill}/v1/completions", kv_prepare
@@ -191,17 +157,7 @@ class Proxy:
                 self._remove_instance("prefill", prefill)
                 raise e
 
-            # Decode stage
             decode = self._schedule(self.decode_cycler)
-            if self.prefill_only:
-                # prefill-only 模式：向 decode 发 max_tokens=1 触发 KV pull，
-                # 后台消费响应（不阻塞客户端），立即返回 stub。
-                kv_drain = request.copy()
-                kv_drain["max_tokens"] = 1
-                kv_drain.pop("stream", None)  # 用非流式，drain 更简单
-                asyncio.ensure_future(self._drain_decode(decode, "/v1/completions", kv_drain))
-                return self._stub_completion_response(request)
-
             try:
                 generator = self._forward_request(
                     f"http://{decode}/v1/completions", request
@@ -220,13 +176,26 @@ class Proxy:
     async def create_chat_completion(self, raw_request: Request):
         try:
             request = await raw_request.json()
+            prefill = self._schedule(self.prefill_cycler)
 
+            if self.prefill_only:
+                kv_prepare = request.copy()
+                kv_prepare["max_tokens"] = 1
+                kv_prepare["max_completion_tokens"] = 1
+                try:
+                    generator = self._forward_request(
+                        f"http://{prefill}/v1/chat/completions", kv_prepare
+                    )
+                except HTTPException as e:
+                    self._remove_instance("prefill", prefill)
+                    raise e
+                return StreamingResponse(content=generator)
+
+            # 标准 PD 流程：prefill → KV transfer → decode
             kv_prepare = request.copy()
             kv_prepare["max_tokens"] = 1
             if "max_completion_tokens" in kv_prepare:
                 kv_prepare["max_completion_tokens"] = 1
-
-            prefill = self._schedule(self.prefill_cycler)
             try:
                 async for _ in self._forward_request(
                     f"http://{prefill}/v1/chat/completions", kv_prepare
@@ -236,16 +205,7 @@ class Proxy:
                 self._remove_instance("prefill", prefill)
                 raise e
 
-            # Decode stage
             decode = self._schedule(self.decode_cycler)
-            if self.prefill_only:
-                kv_drain = request.copy()
-                kv_drain["max_tokens"] = 1
-                kv_drain["max_completion_tokens"] = 1
-                kv_drain.pop("stream", None)
-                asyncio.ensure_future(self._drain_decode(decode, "/v1/chat/completions", kv_drain))
-                return self._stub_chat_completion_response(request)
-
             try:
                 generator = self._forward_request(
                     f"http://{decode}/v1/chat/completions", request
