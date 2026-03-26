@@ -889,6 +889,29 @@ echo $! > "{_pid_file('proxy')}"
         for inst in reversed(self._cfg.prefill_instances):
             _stop_by_pid_file(_pid_file(inst.name), inst.name, self._log)
 
+    def stop_proxy(self) -> None:
+        """仅停止代理。"""
+        stopped = _stop_by_pid_file(_pid_file("proxy"), "proxy", self._log)
+        if not stopped:
+            _stop_proxy_fallback(self._log)
+
+    def restart_proxy(self, log_dir: Path) -> int:
+        """重启代理：先停后启。"""
+        self._log("重启代理...")
+        self.stop_proxy()
+        time.sleep(1)
+        if not self.has_proxy:
+            self._log("ERROR: 配置中未定义 proxy，无法重启。")
+            return 1
+        try:
+            self.start_proxy(log_dir)
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            self._log(f"ERROR: 代理启动失败: {e}")
+            return 1
+        time.sleep(self._cfg.proxy_sleep_s)
+        self._log("代理已重启。")
+        return 0
+
     @staticmethod
     def stop_all(log: LogFn = log_default) -> None:
         """扫描 .pid/ 目录停止所有残留实例（无需配置文件）。"""
@@ -933,7 +956,21 @@ def build_cli_parser() -> argparse.ArgumentParser:
         "--config", "-c",
         type=Path,
         default=None,
-        help="YAML 配置文件（不指定则扫描 /tmp/vllm_*.pid）",
+        help="YAML 配置文件（不指定则扫描 .pid/ 目录）",
+    )
+
+    p_rp = sub.add_parser("restart-proxy", help="仅重启代理（不影响 P/D 实例）")
+    p_rp.add_argument(
+        "--config", "-c",
+        type=Path,
+        required=True,
+        help="YAML 配置文件路径",
+    )
+    p_rp.add_argument(
+        "--log_dir",
+        type=Path,
+        default=None,
+        help="日志目录（默认使用配置文件中的 log_dir）",
     )
 
     return parser
@@ -949,6 +986,11 @@ def main(argv: Optional[list] = None) -> int:
         else:
             PdServiceCtl.stop_all()
         return 0
+
+    if args.cmd == "restart-proxy":
+        cfg = load_config(args.config)
+        log_dir = (args.log_dir if args.log_dir is not None else cfg.log_dir).resolve()
+        return PdServiceCtl(cfg).restart_proxy(log_dir)
 
     # start
     cfg = load_config(args.config)
