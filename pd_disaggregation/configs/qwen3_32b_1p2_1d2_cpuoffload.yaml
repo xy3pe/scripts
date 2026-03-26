@@ -34,8 +34,14 @@ vllm_defaults:
   tool_call_parser: "hermes"
   seed: 1024
   omp_num_threads: 10
+
+# Prefill 专属参数（覆盖 vllm_defaults 中的同名项）
+prefill_defaults:
   num-release-cpu-blocks: 5000
-  release-offload-checksum: true
+
+# Decode 专属参数（覆盖 vllm_defaults 中的同名项）
+# decode_defaults:
+#   max_num_seqs: 512
 
 # KV cache transfer connector 共享配置
 kv_connector:

@@ -32,6 +32,14 @@ vllm_defaults:
   seed: 1024
   omp_num_threads: 10
 
+# Prefill 专属参数（覆盖 vllm_defaults 中的同名项）
+# prefill_defaults:
+#   max_num_seqs: 128
+
+# Decode 专属参数（覆盖 vllm_defaults 中的同名项）
+# decode_defaults:
+#   max_num_seqs: 512
+
 kv_connector:
   type: "MooncakeConnectorV1"
   buffer_device: "npu"

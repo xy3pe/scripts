@@ -211,8 +211,10 @@ class ClusterConfig:
     # 网络
     nic_name: str
     local_ip: str
-    # vLLM 默认参数 & KV connector
+    # vLLM 参数：defaults → role defaults → instance overrides（优先级递增）
     vllm_defaults: Dict[str, Any]
+    prefill_defaults: Dict[str, Any]
+    decode_defaults: Dict[str, Any]
     kv_connector: Dict[str, str]
     # 实例
     prefill_instances: List[InstanceConfig]
@@ -291,6 +293,8 @@ def load_config(path: Path) -> ClusterConfig:
         nic_name=nic_name,
         local_ip=local_ip,
         vllm_defaults=raw.get("vllm_defaults") or {},
+        prefill_defaults=raw.get("prefill_defaults") or {},
+        decode_defaults=raw.get("decode_defaults") or {},
         kv_connector=raw.get("kv_connector") or {},
         prefill_instances=prefill_instances,
         decode_instances=decode_instances,
@@ -575,8 +579,9 @@ def _build_vllm_args(cfg: ClusterConfig, inst: InstanceConfig) -> List[str]:
     - 值为 ``false`` 的布尔型 → 跳过
     - 其他 → ``--flag value``
     """
-    defaults = cfg.vllm_defaults
-    merged = {**defaults, **inst.overrides}
+    # 合并优先级：vllm_defaults → prefill/decode_defaults → instance overrides
+    role_defaults = cfg.prefill_defaults if inst.role == "prefill" else cfg.decode_defaults
+    merged = {**cfg.vllm_defaults, **role_defaults, **inst.overrides}
 
     args = [
         "vllm", "serve", cfg.model_path,
