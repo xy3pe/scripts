@@ -35,6 +35,7 @@ vllm_defaults:
   seed: 1024
   omp_num_threads: 10
   num-release-cpu-blocks: 5000
+  release-offload-checksum: true
 
 # KV cache transfer connector 共享配置
 kv_connector:
