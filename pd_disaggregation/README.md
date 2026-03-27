@@ -97,10 +97,8 @@ proxy:
 
 | 文件 | 说明 |
 |------|------|
-| `qwen3_32b_1p2_2d2.yaml` | Qwen3-32B，1P(TP=2) + 2D(TP=2)，共 6 卡 |
-| `qwen3_32b_1p2_1d2.yaml` | Qwen3-32B，1P(TP=2) + 1D(TP=2)，共 4 卡 |
+| `qwen3_32b_1p2_1d2.yaml` | Qwen3-32B，1P(TP=2, 卡 0-1) + 1D(TP=2, 卡 2-3)，prefill 启用 chunked prefill，proxy prefill-only 模式 |
 | `qwen3_32b_1p2_1d2_cpuoffload.yaml` | Qwen3-32B，1P(TP=2) + 1D(TP=2)，prefill 启用 CPU offload |
-| `qwen3_8b_1p2_2d2.yaml` | Qwen3-8B，1P(TP=1) + 2D(TP=1)，共 3 卡 |
 
 ---
 

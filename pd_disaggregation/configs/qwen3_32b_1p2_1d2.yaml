@@ -1,4 +1,4 @@
-# Qwen3-32B PD 分离：1 Prefill (TP=2, 卡 0-1) + 1 Decode (TP=2, 卡 2-3)，共 4 卡
+# Qwen3-8B PD 分离：1 Prefill (TP=1, 卡 3) + 2 Decode (TP=1, 卡 4-5)，共 3 卡
 cluster_name: "Qwen3-32B_1P2_1D2"
 
 model:
@@ -6,24 +6,27 @@ model:
   served_name: "qwen3_32b"
 
 venv:
-  vllm: "/root/autodl-tmp/py_venv/vllm2"
+  vllm: "/root/autodl-tmp/pxy/venv/pxy_dev"
 
-log_dir: "logs"   # 日志输出目录；CLI --log_dir 可覆盖
+log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/0326_32B_1P2_1D2"   # 日志输出目录；CLI --log_dir 可覆盖
+
 log_level: "INFO"  # 日志级别：DEBUG / INFO / WARNING / ERROR
 
 paths:
   transfer_engine_lib: "/usr/local/lib"
   python_lib: "/root/.local/share/uv/python/cpython-3.11.15-linux-aarch64-gnu/lib"
 
+# null = 自动探测；显式指定则覆盖
 network:
   nic_name: null
   local_ip: null
 
+# vLLM serve 默认参数，所有实例共享；实例级 overrides 可覆盖任意项
 vllm_defaults:
   dtype: "bfloat16"
   max_model_len: 32768
   max_num_batched_tokens: 32768
-  max_num_seqs: 256
+  max_num_seqs: 64
   gpu_memory_utilization: 0.9
   enforce_eager: true
   trust_remote_code: true
@@ -33,13 +36,17 @@ vllm_defaults:
   omp_num_threads: 10
 
 # Prefill 专属参数（覆盖 vllm_defaults 中的同名项）
-# prefill_defaults:
-#   max_num_seqs: 128
+prefill_defaults:
+  enable_chunked_prefill: true
+  max_num_batched_tokens: 32768
+  long-prefill-token-threshold: 1024
+  num-release-cpu-blocks: 0
 
 # Decode 专属参数（覆盖 vllm_defaults 中的同名项）
 # decode_defaults:
 #   max_num_seqs: 512
 
+# KV cache transfer connector 共享配置
 kv_connector:
   type: "MooncakeConnectorV1"
   buffer_device: "npu"
@@ -67,23 +74,26 @@ kv_connector:
 
 prefill:
   - name: "P0"
-    port: 9000              # API 端口
+    port: 6000              # API 端口
     devices: "0,1"
     tensor_parallel_size: 2
-    dp_port: 13395          # DP RPC（所有 P 共享）
-    kv_port: 20001          # KV transfer（所有 P 共享）
+    dp_port: 12395          # DP RPC（所有 P 共享）
+    kv_port: 21001          # KV transfer（所有 P 共享）
     engine_id: 0            # 所有 P = 0
     hccl_buffsize: 256
 
 decode:
   - name: "D0"
-    port: 9010
+    port: 6010
     devices: "2,3"
     tensor_parallel_size: 2
-    dp_port: 13495          # DP RPC（所有 D 共享，与 P 不同）
-    kv_port: 20002          # KV transfer（所有 D 共享，与 P 不同）
+    dp_port: 12495          # DP RPC（所有 D 共享，与 P 不同）
+    kv_port: 21002          # KV transfer（所有 D 共享，与 P 不同）
     engine_id: 1            # 所有 D = 1
-    hccl_buffsize: 1024
+    hccl_buffsize: 512
 
+
+# 负载均衡代理；设为 null 或删除此段则不启代理
 proxy:
-  port: 8000
+  port: 8050
+  prefill_only: true
