@@ -406,6 +406,74 @@ def _kill_pid_tree(pid: int, log: LogFn, label: str, wait_cap: int = 30) -> None
         log(f"[stop {label}] pid {pid} 在 {wait_cap}s 内仍存在，放弃。")
 
 
+def _get_npu_hbm_usage(log: LogFn) -> Optional[Dict[int, int]]:
+    """运行 ``npu-smi info`` 并返回各 NPU 位置索引到 HBM 已用显存（MB）的映射。
+
+    npu-smi 按顺序输出 NPU 0、1、2…，返回字典 key 即为该顺序位置（0-based），
+    与 ``ASCEND_RT_VISIBLE_DEVICES`` / ``devices`` 配置中的卡号一致。
+
+    解析形如::
+
+        | 0     910B2               | OK            | ...                                                |
+        | 0                         | 0000:C1:00.0  | 0           0    / 0          3435 / 65536         |
+
+    的两行一组结构：首行（NPU 行）提取 NPU 编号，次行（Chip 行）提取 HBM 已用值。
+    """
+    try:
+        p = subprocess.run(
+            ["npu-smi", "info"],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"npu-smi info 执行失败: {e}")
+        return None
+
+    if p.returncode != 0:
+        log(f"npu-smi info 返回码 {p.returncode}，stderr: {p.stderr.strip()[:200]}")
+        return None
+
+    # NPU 首行：以 "| <数字>  <型号名>" 开头，例如 "| 0     910B2"
+    npu_head_re = re.compile(r'^\|\s*(\d+)\s+\S')
+    # Chip 行：含 PCI 总线地址（格式: XXXX:XX:XX.X）
+    pci_re = re.compile(r'\b[0-9A-Fa-f]{4}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-9]\b')
+    usage_re = re.compile(r'(\d+)\s*/\s*\d+')
+
+    hbm_map: Dict[int, int] = {}
+    pending_npu_idx: Optional[int] = None
+
+    for line in (p.stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            pending_npu_idx = None
+            continue
+
+        if pending_npu_idx is None:
+            m = npu_head_re.match(stripped)
+            if m:
+                pending_npu_idx = int(m.group(1))
+        else:
+            # 下一个 | 开头行：若是 Chip 行则提取 HBM
+            if pci_re.search(stripped):
+                matches = usage_re.findall(stripped)
+                # 每行含两组 used/total：Memory-Usage 和 HBM-Usage，取最后一组
+                if len(matches) >= 2:
+                    hbm_map[pending_npu_idx] = int(matches[-1])
+            pending_npu_idx = None
+
+    return hbm_map if hbm_map else None
+
+
+def _collect_device_indices(cfg: ClusterConfig) -> List[int]:
+    """收集 config 中所有 prefill/decode 实例使用的卡号（即 npu-smi 输出中的位置索引）。"""
+    indices: set = set()
+    for inst in cfg.prefill_instances + cfg.decode_instances:
+        for d in inst.devices.split(","):
+            d = d.strip()
+            if d:
+                indices.add(int(d))
+    return sorted(indices)
+
+
 def _stop_by_pid_file(pid_file: Path, label: str, log: LogFn) -> bool:
     """读取 PID 文件并停止对应进程树。返回是否成功停止了进程。"""
     if not pid_file.is_file():
@@ -912,6 +980,84 @@ echo $! > "{_pid_file('proxy')}"
         self._log("代理已重启。")
         return 0
 
+    # ---------- NPU 显存检查 ----------
+
+    def wait_npu_memory_release(
+        self,
+        device_indices: List[int],
+        threshold_mb: int = 5000,
+        timeout_s: int = 300,
+        poll_interval_s: int = 3,
+    ) -> bool:
+        """
+        轮询 ``npu-smi info``，直到 ``device_indices`` 指定卡的 HBM 已用显存均低于
+        ``threshold_mb``。
+
+        ``device_indices`` 为 npu-smi 输出中的位置索引（与 devices 配置中的卡号对应），
+        例如 ``devices: "2,3"`` 对应 ``[2, 3]``。
+
+        返回 True 表示显存已释放，False 表示超时。
+        """
+        self._log(
+            f"等待 NPU 卡 {device_indices} 显存释放"
+            f"（阈值 {threshold_mb} MB，超时 {timeout_s}s）..."
+        )
+        t0 = time.time()
+        while True:
+            hbm_map = _get_npu_hbm_usage(self._log)
+            if hbm_map is not None:
+                # 只取 config 中配置的卡
+                target = {idx: hbm_map[idx] for idx in device_indices if idx in hbm_map}
+                missing = [idx for idx in device_indices if idx not in hbm_map]
+                if missing:
+                    self._log(f"WARNING: npu-smi 输出中未找到卡 {missing}，已跳过。")
+                self._log(
+                    f"当前 HBM 用量: "
+                    + ", ".join(f"NPU{k}={v}MB" for k, v in sorted(target.items()))
+                )
+                if target and all(v < threshold_mb for v in target.values()):
+                    self._log(
+                        f"NPU 卡 {device_indices} 显存已释放"
+                        f"（最大 {max(target.values())} MB < {threshold_mb} MB）。"
+                    )
+                    return True
+            elapsed = time.time() - t0
+            if elapsed >= timeout_s:
+                self._log(
+                    f"ERROR: NPU 卡 {device_indices} 显存在 {timeout_s}s 内未释放"
+                    f"（当前: {hbm_map}）。"
+                )
+                return False
+            time.sleep(poll_interval_s)
+
+    # ---------- 整栈重启 ----------
+
+    def restart(
+        self,
+        log_dir: Path,
+        *,
+        mem_threshold_mb: int = 5000,
+        mem_timeout_s: int = 300,
+        wait_ready: bool = True,
+    ) -> int:
+        """
+        重启全部服务：stop → 等待 NPU 显存 < ``mem_threshold_mb`` → start_stack。
+
+        返回 0 成功，非 0 失败。
+        """
+        self._log("=== restart: 开始停止所有服务 ===")
+        self.stop()
+        device_indices = _collect_device_indices(self._cfg)
+        self._log(f"=== restart: 服务已停止，等待 NPU 卡 {device_indices} 显存释放 ===")
+        if not self.wait_npu_memory_release(
+            device_indices=device_indices,
+            threshold_mb=mem_threshold_mb,
+            timeout_s=mem_timeout_s,
+        ):
+            return 1
+        self._log("=== restart: 显存已释放，重新启动服务 ===")
+        return self.start_stack(log_dir, wait_ready=wait_ready)
+
     @staticmethod
     def stop_all(log: LogFn = log_default) -> None:
         """扫描 .pid/ 目录停止所有残留实例（无需配置文件）。"""
@@ -959,6 +1105,33 @@ def build_cli_parser() -> argparse.ArgumentParser:
         help="YAML 配置文件（不指定则扫描 .pid/ 目录）",
     )
 
+    p_restart = sub.add_parser("restart", help="重启全部服务：stop → 等待 NPU 显存释放 → start")
+    p_restart.add_argument(
+        "--config", "-c",
+        type=Path,
+        required=True,
+        help="YAML 配置文件路径",
+    )
+    p_restart.add_argument(
+        "--log_dir",
+        type=Path,
+        default=None,
+        help="日志目录（默认使用配置文件中的 log_dir）",
+    )
+    p_restart.add_argument(
+        "--mem_threshold_mb",
+        type=int,
+        default=5000,
+        help="HBM 显存释放阈值（MB，默认 5000）",
+    )
+    p_restart.add_argument(
+        "--mem_timeout_s",
+        type=int,
+        default=300,
+        help="等待显存释放的超时时间（秒，默认 300）",
+    )
+    p_restart.add_argument("--no_wait", action="store_true", help="不等待 /health 就绪")
+
     p_rp = sub.add_parser("restart-proxy", help="仅重启代理（不影响 P/D 实例）")
     p_rp.add_argument(
         "--config", "-c",
@@ -986,6 +1159,16 @@ def main(argv: Optional[list] = None) -> int:
         else:
             PdServiceCtl.stop_all()
         return 0
+
+    if args.cmd == "restart":
+        cfg = load_config(args.config)
+        log_dir = (args.log_dir if args.log_dir is not None else cfg.log_dir).resolve()
+        return PdServiceCtl(cfg).restart(
+            log_dir,
+            mem_threshold_mb=args.mem_threshold_mb,
+            mem_timeout_s=args.mem_timeout_s,
+            wait_ready=not args.no_wait,
+        )
 
     if args.cmd == "restart-proxy":
         cfg = load_config(args.config)
