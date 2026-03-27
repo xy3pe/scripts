@@ -42,6 +42,10 @@ PKG_DIR = Path(__file__).resolve().parent
 _FALLBACK_NIC_NAME = "eth0"
 _FALLBACK_LOCAL_IP = "172.17.0.4"
 
+# 日志轮转参数（通过 VLLM_LOGGING_CONFIG_PATH 注入给 vLLM）
+_LOG_MAX_BYTES = 100 * 1024 * 1024   # 单文件上限 100 MB
+_LOG_BACKUP_COUNT = 50               # 最多保留 50 个历史文件
+
 LogFn = Callable[[str], None]
 
 
@@ -474,6 +478,49 @@ def _collect_device_indices(cfg: ClusterConfig) -> List[int]:
     return sorted(indices)
 
 
+def _write_logging_config(log_file: Path, log_level: str) -> Path:
+    """为 vLLM 实例生成 Python logging JSON 配置文件并返回其路径。
+
+    生成的文件放在与 ``log_file`` 同目录下，命名为 ``<stem>_logging.json``。
+    vLLM 通过 ``VLLM_LOGGING_CONFIG_PATH`` 环境变量读取该文件，
+    从而将日志写入 ``RotatingFileHandler``（单文件 100 MB，最多 50 个历史文件）。
+    """
+    config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "standard": {
+                "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            }
+        },
+        "handlers": {
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "formatter": "standard",
+                "filename": str(log_file),
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
+                "encoding": "utf-8",
+            }
+        },
+        "loggers": {
+            "vllm": {
+                "handlers": ["file"],
+                "level": log_level,
+                "propagate": False,
+            }
+        },
+        "root": {
+            "handlers": ["file"],
+            "level": "WARNING",
+        },
+    }
+    cfg_path = log_file.parent / f"{log_file.stem}_logging.json"
+    cfg_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    return cfg_path
+
+
 def _stop_by_pid_file(pid_file: Path, label: str, log: LogFn) -> bool:
     """读取 PID 文件并停止对应进程树。返回是否成功停止了进程。"""
     if not pid_file.is_file():
@@ -796,14 +843,19 @@ class PdServiceCtl:
         if not venv_activate.is_file():
             raise FileNotFoundError(f"venv activate 不存在: {venv_activate}")
 
-        # 通过 bash source activate 然后执行 vllm serve
-        # 用 shlex.quote 转义每个参数，防止 JSON 等特殊字符被 shell 拆解
+        # 为本实例生成专属 logging JSON 配置，通过 VLLM_LOGGING_CONFIG_PATH 注入；
+        # vLLM 自身的 RotatingFileHandler 负责轮转（100 MB × 50 个历史文件）。
+        # stdout/stderr 重定向到独立的 _out.log，供捕获启动错误和 C 扩展输出。
+        logging_cfg = _write_logging_config(log_file, self._cfg.log_level)
+        env["VLLM_LOGGING_CONFIG_PATH"] = str(logging_cfg)
+
+        out_log = log_file.parent / f"{log_file.stem}_out.log"
         cmd_str = " ".join(shlex.quote(a) for a in args)
         inner = f"""
 set -euo pipefail
 source "{venv_activate}"
 set -m
-nohup {cmd_str} >> "{log_file}" 2>&1 &
+nohup {cmd_str} >> "{out_log}" 2>&1 &
 echo $! > "{_pid_file(inst.name)}"
 """
         self._log(f"启动 {inst.role} [{inst.name}] (port={inst.port}, devices={inst.devices})...")
