@@ -775,6 +775,7 @@ def dry_run(cfg: ClusterConfig, log_dir: Path) -> None:
 
         role_tag = inst.role.upper()
         log_file = _instance_log_file(inst, log_dir)
+        logging_cfg = log_file.parent / f"{log_file.stem}_logging.json"
 
         print(f"--- [{role_tag}] {inst.name} (port={inst.port}, devices={inst.devices}) ---")
         print(f"  PID file: {_pid_file(inst.name)}")
@@ -786,7 +787,8 @@ def dry_run(cfg: ClusterConfig, log_dir: Path) -> None:
                 continue
             print(f"    {k}={diff_env[k]}")
         print(f"  Command:")
-        print(f"    {' '.join(shlex.quote(a) for a in args)}")
+        cmd_str = " ".join(shlex.quote(a) for a in args)
+        print(f"    env VLLM_LOGGING_CONFIG_PATH=\"{logging_cfg}\" {cmd_str}")
         print()
 
     if cfg.proxy_port is not None:
@@ -847,7 +849,6 @@ class PdServiceCtl:
         # vLLM 自身的 RotatingFileHandler 负责轮转（100 MB × 50 个历史文件）。
         # stdout/stderr 重定向到独立的 _out.log，供捕获启动错误和 C 扩展输出。
         logging_cfg = _write_logging_config(log_file, self._cfg.log_level)
-        env["VLLM_LOGGING_CONFIG_PATH"] = str(logging_cfg)
 
         out_log = log_file.parent / f"{log_file.stem}_out.log"
         cmd_str = " ".join(shlex.quote(a) for a in args)
@@ -855,7 +856,7 @@ class PdServiceCtl:
 set -euo pipefail
 source "{venv_activate}"
 set -m
-nohup {cmd_str} >> "{out_log}" 2>&1 &
+nohup env VLLM_LOGGING_CONFIG_PATH="{logging_cfg}" {cmd_str} >> "{out_log}" 2>&1 &
 echo $! > "{_pid_file(inst.name)}"
 """
         self._log(f"启动 {inst.role} [{inst.name}] (port={inst.port}, devices={inst.devices})...")
