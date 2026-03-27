@@ -20,8 +20,14 @@ python pd_service_ctl.py stop --config configs/qwen3_32b_1p2_2d2.yaml
 # 或扫描 .pid/ 目录全部停止（无需指定配置）
 python pd_service_ctl.py stop
 
+# 重启全部服务（stop → 等 NPU 显存释放 → start）
+python pd_service_ctl.py restart --config configs/qwen3_32b_1p2_2d2.yaml
+
 # 单独重启代理（不影响 P/D 实例）
 python pd_service_ctl.py restart-proxy --config configs/qwen3_32b_1p2_2d2.yaml
+
+# 启动 HTTP 控制服务器（支持远程调用）
+python pd_service_server.py --config configs/qwen3_32b_1p2_2d2.yaml --port 8088
 ```
 
 ---
@@ -100,7 +106,7 @@ proxy:
 
 ## `pd_service_ctl.py`
 
-**作用**：统一拉起 / 停止 **Prefill → Decode →（可选）代理**。
+**作用**：统一拉起 / 停止 / 重启 **Prefill → Decode →（可选）代理**。
 
 **命令行**
 
@@ -111,9 +117,19 @@ python pd_service_ctl.py start --config <yaml> [--log_dir <dir>] [--no_wait] [--
 # 停止（指定配置或扫描 .pid/ 全部停止）
 python pd_service_ctl.py stop [--config <yaml>]
 
+# 重启全部服务：stop → 等待 NPU HBM 显存释放 → start
+python pd_service_ctl.py restart --config <yaml> [--log_dir <dir>] \
+    [--mem_threshold_mb 5000] [--mem_timeout_s 300] [--no_wait]
+
 # 仅重启代理（不影响 P/D 实例）
 python pd_service_ctl.py restart-proxy --config <yaml> [--log_dir <dir>]
 ```
+
+**`restart` 流程**
+
+1. 停止所有实例（代理 → decode → prefill）
+2. 轮询 `npu-smi info`，检查配置中所用各卡的 HBM 已用显存（`devices: "2,3"` 对应 npu-smi 输出中第 2、3 张卡），每 3 秒一次，直到全部低于阈值（默认 5000 MB）
+3. 按正常顺序重新启动
 
 **代码调用**
 
@@ -123,6 +139,7 @@ cfg = load_config(Path("configs/xxx.yaml"))
 ctl = PdServiceCtl(cfg)
 ctl.start_stack(Path("logs"))
 ctl.stop()
+ctl.restart(Path("logs"), mem_threshold_mb=5000, mem_timeout_s=300)
 ```
 
 **说明**
@@ -130,6 +147,84 @@ ctl.stop()
 - `NIC_NAME` / `LOCAL_IP` 在配置中设为 `null` 时自动从 `ip` / `ifconfig` 探测。
 - PID 文件存放在 `.pid/` 目录，`stop` 时通过 PID 文件终止进程树；文件不存在时按进程名兜底查杀。
 - 启动顺序：prefill 实例全部就绪后，再启动 decode 实例，最后启动代理。
+
+---
+
+## `pd_service_server.py`
+
+**作用**：HTTP 控制服务器，提供 REST API 远程控制 PD 集群，适用于多机协同或自动化运维场景。
+
+**启动**
+
+```bash
+python pd_service_server.py --config configs/xxx.yaml [--host 0.0.0.0] [--port 8088] [--log_dir logs/]
+```
+
+**API**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/start` | 后台启动全部服务，立即返回 `task_id` |
+| `POST` | `/stop` | 后台停止全部服务 |
+| `POST` | `/restart` | 后台重启（stop → 等 NPU 显存释放 → start） |
+| `GET` | `/status` | 各实例存活状态 + NPU HBM 用量 |
+| `GET` | `/task` | 最新任务进度和日志 |
+| `GET` | `/task/<id>` | 指定任务进度和完整日志 |
+
+**示例**
+
+```bash
+# 启动服务
+curl -X POST http://host:8088/start
+
+# 停止服务
+curl -X POST http://host:8088/stop
+
+# 重启（自定义显存阈值）
+curl -X POST http://host:8088/restart \
+  -H 'Content-Type: application/json' \
+  -d '{"mem_threshold_mb": 3000, "mem_timeout_s": 120}'
+
+# 查询服务状态
+curl http://host:8088/status
+
+# 轮询任务进度（start/restart 是长时操作）
+curl http://host:8088/task
+curl http://host:8088/task/a1b2c3d4
+```
+
+**`POST` 请求体参数**（均为可选 JSON）
+
+| 参数 | 适用接口 | 说明 | 默认值 |
+|------|----------|------|--------|
+| `log_dir` | start / restart | 日志目录 | 配置文件中的 `log_dir` |
+| `no_wait` | start / restart | 不等待 `/health` 就绪 | `false` |
+| `mem_threshold_mb` | restart | NPU HBM 释放阈值（MB） | `5000` |
+| `mem_timeout_s` | restart | 等待显存释放超时（秒） | `300` |
+
+**`GET /status` 响应示例**
+
+```json
+{
+  "busy": false,
+  "alive_instances": 3,
+  "total_instances": 3,
+  "current_task": null,
+  "instances": [
+    {"name": "P0", "role": "prefill", "port": 9000, "devices": "0,1", "pid": 12345, "alive": true},
+    {"name": "D0", "role": "decode",  "port": 9010, "devices": "2,3", "pid": 12346, "alive": true},
+    {"name": "proxy", "role": "proxy", "port": 8000, "devices": null,  "pid": 12347, "alive": true}
+  ],
+  "npu_hbm_mb": {"npu0": 3435, "npu1": 3431, "npu2": 12000, "npu3": 11980}
+}
+```
+
+**设计说明**
+
+- start / restart 等长时操作（分钟级）在后台线程执行，202 立即返回，通过 `GET /task` 轮询进度
+- 同一时间只允许一个操作运行；并发请求返回 `409 Conflict` + 当前任务快照
+- 任务日志最多保留 2000 行，历史任务保留最近 10 条
+- 纯标准库实现，无额外依赖
 
 ---
 
