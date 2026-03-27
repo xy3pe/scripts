@@ -142,16 +142,10 @@ ctl.restart(Path("logs"), mem_threshold_mb=5000, mem_timeout_s=300)
 
 **日志文件**
 
-每个 vLLM 实例启动时自动在日志目录生成专属 logging 配置文件，通过 `VLLM_LOGGING_CONFIG_PATH` 注入给 vLLM，由 vLLM 自身完成日志轮转：
-
 | 文件 | 内容 |
 |------|------|
-| `{role}_{name}.log` | vLLM Python 日志（`RotatingFileHandler`，单文件 100 MB，最多保留 50 个） |
-| `{role}_{name}_out.log` | 进程 stdout/stderr（启动 banner、C 扩展输出，通常较小） |
-| `{role}_{name}_logging.json` | 自动生成的 logging 配置文件（启动时覆盖写入） |
-| `proxy.log` | 代理进程 stdout/stderr（直接重定向，无轮转） |
-
-历史轮转文件命名为 `prefill_P0.log.1`、`prefill_P0.log.2` 依此类推。
+| `{role}_{name}.log` | vLLM 实例 stdout/stderr（nohup 重定向，不限大小） |
+| `proxy.log` | 代理进程 stdout/stderr |
 
 **说明**
 
