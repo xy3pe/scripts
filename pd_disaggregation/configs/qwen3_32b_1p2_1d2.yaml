@@ -8,7 +8,7 @@ model:
 venv:
   vllm: "/root/autodl-tmp/pxy/venv/pxy_dev"
 
-log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/0326_32B_1P2_1D2"   # 日志输出目录；CLI --log_dir 可覆盖
+log_dir: "/root/autodl-tmp/pxy/share/workspace/logs/0327_original"   # 日志输出目录；CLI --log_dir 可覆盖
 
 log_level: "INFO"  # 日志级别：DEBUG / INFO / WARNING / ERROR
 
